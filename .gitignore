@@ -1,6 +1,10 @@
 # dependencies (bun install)
 node_modules
 
+# runtime state
+store
+logs
+
 # output
 out
 dist

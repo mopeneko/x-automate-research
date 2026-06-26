@@ -1,8 +1,16 @@
 {
-  "name": "/workspace",
-  "module": "index.ts",
+  "name": "x-list-market-summary",
+  "module": "src/index.ts",
   "type": "module",
   "private": true,
+  "scripts": {
+    "poll": "bun run src/index.ts poll",
+    "send:asa": "bun run src/index.ts send 朝場",
+    "send:hiru": "bun run src/index.ts send 昼場",
+    "send:yoru": "bun run src/index.ts send 夜場",
+    "test": "bun run test/smoke.ts",
+    "typecheck": "tsc --noEmit"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },

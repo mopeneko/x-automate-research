@@ -47,10 +47,10 @@ sudo timedatectl set-timezone Asia/Tokyo
 ```
 # 環境変数を読み込んで実行 (例: ~/.env を source)
 SHELL=/bin/bash
-*/15 * * * * cd /path/to/repo && source .env && /path/to/bun run src/index.ts poll >> logs/poll.log 2>&1
-30 12 * * *  cd /path/to/repo && source .env && /path/to/bun run src/index.ts send 朝場 >> logs/send.log 2>&1
-30 16 * * *  cd /path/to/repo && source .env && /path/to/bun run src/index.ts send 昼場 >> logs/send.log 2>&1
-0  0 * * *   cd /path/to/repo && source .env && /path/to/bun run src/index.ts send 夜場 >> logs/send.log 2>&1
+*/15 * * * * cd /path/to/repo && /path/to/bun run src/index.ts poll >> logs/poll.log 2>&1
+30 12 * * *  cd /path/to/repo && /path/to/bun run src/index.ts send 朝場 >> logs/send.log 2>&1
+30 16 * * *  cd /path/to/repo && /path/to/bun run src/index.ts send 昼場 >> logs/send.log 2>&1
+0  0 * * *   cd /path/to/repo && /path/to/bun run src/index.ts send 夜場 >> logs/send.log 2>&1
 ```
 
 ## 手動実行

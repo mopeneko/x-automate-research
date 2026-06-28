@@ -59,7 +59,17 @@ export class Store {
     if (!(await Bun.file(path).exists())) {
       return { date, posts: [] };
     }
-    return await Bun.file(path).json();
+    const data = (await Bun.file(path).json()) as DayFile;
+    const seen = new Set<string>();
+    const unique = data.posts.filter((p) => {
+      if (seen.has(p.id)) return false;
+      seen.add(p.id);
+      return true;
+    });
+    if (unique.length !== data.posts.length) {
+      console.warn(`[store] removed ${data.posts.length - unique.length} duplicate(s) from ${date}`);
+    }
+    return { date, posts: unique };
   }
 
   /** Append posts to the given day, deduping by id. Returns count actually added. */

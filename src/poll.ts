@@ -24,8 +24,23 @@ export async function runPoll(config: Config): Promise<{ added: number }> {
     return { added: 0 };
   }
 
-  const today = jstDateKey(new Date());
-  const added = await store.appendPosts(today, posts);
+  const postsByDate = new Map<string, typeof posts>();
+  for (const post of posts) {
+    const date = jstDateKey(new Date(post.createdAt));
+    const arr = postsByDate.get(date);
+    if (arr) {
+      arr.push(post);
+    } else {
+      postsByDate.set(date, [post]);
+    }
+  }
+
+  let totalAdded = 0;
+  for (const [date, datePosts] of postsByDate) {
+    const added = await store.appendPosts(date, datePosts);
+    totalAdded += added;
+    console.log(`[poll] ${added} added to ${date}`);
+  }
 
   const newCursor = {
     sinceId: SocialDataClient.newestId(posts, cursor.sinceId),
@@ -33,6 +48,6 @@ export async function runPoll(config: Config): Promise<{ added: number }> {
   };
   await store.writeCursor(newCursor);
 
-  console.log(`[poll] fetched ${posts.length} new posts, ${added} added to ${today}, cursor=${newCursor.sinceId}`);
-  return { added };
+  console.log(`[poll] fetched ${posts.length} new posts, ${totalAdded} added total, cursor=${newCursor.sinceId}`);
+  return { added: totalAdded };
 }

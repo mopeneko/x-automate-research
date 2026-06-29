@@ -23,7 +23,11 @@ async function main() {
   const config = loadConfig();
 
   if (command === "poll") {
-    await runPoll(config);
+    const pipelineId = process.argv[3];
+    if (pipelineId) {
+      assertKnownPipeline(config, pipelineId);
+    }
+    await runPoll(config, pipelineId);
     return;
   }
 
@@ -33,12 +37,23 @@ async function main() {
       console.error(`Invalid window: ${window}. Must be one of: ${VALID_WINDOWS.join(", ")}`);
       process.exit(2);
     }
-    await runSend(config, window);
+    const pipelineId = process.argv[4];
+    if (pipelineId) {
+      assertKnownPipeline(config, pipelineId);
+    }
+    await runSend(config, window, pipelineId);
     return;
   }
 
   console.error(`Unknown command: ${command}. Use 'poll' or 'send'.`);
   process.exit(2);
+}
+
+function assertKnownPipeline(config: ReturnType<typeof loadConfig>, pipelineId: string): void {
+  if (!config.pipelines.some((pipeline) => pipeline.id === pipelineId)) {
+    console.error(`Unknown pipeline id: ${pipelineId}`);
+    process.exit(2);
+  }
 }
 
 main().catch((err) => {

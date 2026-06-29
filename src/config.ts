@@ -1,4 +1,6 @@
-import type { WindowDef } from "./types.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import type { PipelineConfig, WindowDef } from "./types.ts";
 
 /**
  * Configuration loaded from environment variables. All secrets come from env;
@@ -22,33 +24,79 @@ export const POLL_MAX_PAGES = 5;
 export const TELEGRAM_MAX_CHARS = 4096;
 
 export interface Config {
-  socialdataListId: string;
   socialdataApiKey: string;
   geminiApiKey: string;
   telegramBotToken: string;
-  telegramChatId: string;
+  pipelines: PipelineConfig[];
   storeDir: string;
 }
 
+const PIPELINE_ID_RE = /^[a-z0-9-]+$/;
+
 export function loadConfig(): Config {
-  const required = [
-    "SOCIALDATA_LIST_ID",
-    "SOCIALDATA_API_KEY",
-    "GEMINI_API_KEY",
-    "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_CHAT_ID",
-  ] as const;
+  const required = ["SOCIALDATA_API_KEY", "GEMINI_API_KEY", "TELEGRAM_BOT_TOKEN"] as const;
   for (const key of required) {
     if (!process.env[key]) {
       throw new Error(`Missing required env var: ${key}`);
     }
   }
+
   return {
-    socialdataListId: process.env.SOCIALDATA_LIST_ID!,
     socialdataApiKey: process.env.SOCIALDATA_API_KEY!,
     geminiApiKey: process.env.GEMINI_API_KEY!,
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN!,
-    telegramChatId: process.env.TELEGRAM_CHAT_ID!,
+    pipelines: loadPipelines(),
     storeDir: process.env.STORE_DIR ?? "./store",
   };
+}
+
+function loadPipelines(): PipelineConfig[] {
+  const path = resolve(process.cwd(), "pipelines.json");
+  if (!existsSync(path)) {
+    throw new Error(`Missing pipelines.json at ${path}. Create it from the README template.`);
+  }
+
+  const text = readFileSync(path, "utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid pipelines.json: ${reason}`);
+  }
+  return validatePipelines(parsed);
+}
+
+function validatePipelines(raw: unknown): PipelineConfig[] {
+  if (!Array.isArray(raw)) {
+    throw new Error("pipelines.json must contain a JSON array.");
+  }
+  if (raw.length === 0) {
+    throw new Error("pipelines.json must declare at least one Pipeline.");
+  }
+
+  const seen = new Set<string>();
+  return raw.map((entry, index) => {
+    if (!isPipelineConfig(entry)) {
+      throw new Error(`pipelines.json entry #${index + 1} must have non-empty id, listId, telegramChatId.`);
+    }
+    if (!PIPELINE_ID_RE.test(entry.id)) {
+      throw new Error(`pipelines.json entry #${index + 1} has invalid id '${entry.id}'. Use [a-z0-9-]+.`);
+    }
+    if (seen.has(entry.id)) {
+      throw new Error(`pipelines.json has duplicate pipeline id '${entry.id}'.`);
+    }
+    seen.add(entry.id);
+    return entry;
+  });
+}
+
+function isPipelineConfig(value: unknown): value is PipelineConfig {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return isNonEmptyString(candidate.id) && isNonEmptyString(candidate.listId) && isNonEmptyString(candidate.telegramChatId);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }

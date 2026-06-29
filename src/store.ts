@@ -1,7 +1,8 @@
+import { mkdir, rename } from "node:fs/promises";
 import type { Tweet } from "./types.ts";
 
 /**
- * Tweet Store: date-scoped JSON files + a single cursor.json.
+ * Tweet Store: per-Pipeline date-scoped JSON files + cursor.json.
  * See CONTEXT.md "Tweet Store". Writes are atomic (tmp + rename) to prevent
  * corruption of the Fetch Cursor on crash.
  */
@@ -16,34 +17,39 @@ interface CursorFile {
   sinceId: string | null;
   /** ISO timestamp of last successful poll. */
   updatedAt: string;
+  /** Consecutive poll failures for this Pipeline. */
+  consecutivePollFailures: number;
 }
 
 export class Store {
-  constructor(private storeDir: string) {}
+  constructor(
+    private storeDir: string,
+    private pipelineId: string,
+  ) {}
+
+  private pipelineDir(): string {
+    return `${this.storeDir}/${this.pipelineId}`;
+  }
 
   private dayPath(date: string): string {
-    return `${this.storeDir}/${date}.json`;
+    return `${this.pipelineDir()}/${date}.json`;
   }
   private cursorPath(): string {
-    return `${this.storeDir}/cursor.json`;
+    return `${this.pipelineDir()}/cursor.json`;
   }
 
   /** Ensure the store directory exists. */
   async init(): Promise<void> {
-    await Bun.file(this.storeDir).exists ? undefined : undefined;
-    try {
-      await Bun.write(this.storeDir + "/.gitkeep", "");
-    } catch {
-      // dir creation handled lazily by writeFile in Bun (creates parent dirs)
-    }
+    await mkdir(this.pipelineDir(), { recursive: true });
   }
 
   async readCursor(): Promise<CursorFile> {
     const path = this.cursorPath();
     if (!(await Bun.file(path).exists())) {
-      return { sinceId: null, updatedAt: new Date(0).toISOString() };
+      return defaultCursor();
     }
-    return await Bun.file(path).json();
+    const raw = (await Bun.file(path).json()) as unknown;
+    return toCursorFile(raw);
   }
 
   /** Atomic cursor write: tmp file then rename. */
@@ -90,10 +96,10 @@ export class Store {
 
   /** Persist a Window Summary alongside the day for Daily Summary reuse. */
   async saveWindowSummary(date: string, window: string, text: string): Promise<void> {
-    const path = `${this.storeDir}/${date}.summaries.json`;
+    const path = `${this.pipelineDir()}/${date}.summaries.json`;
     let summaries: Record<string, string> = {};
     if (await Bun.file(path).exists()) {
-      summaries = await Bun.file(path).json();
+      summaries = (await Bun.file(path).json()) as Record<string, string>;
     }
     summaries[window] = text;
     const tmp = path + ".tmp";
@@ -102,16 +108,35 @@ export class Store {
   }
 
   async readWindowSummaries(date: string): Promise<Record<string, string>> {
-    const path = `${this.storeDir}/${date}.summaries.json`;
+    const path = `${this.pipelineDir()}/${date}.summaries.json`;
     if (!(await Bun.file(path).exists())) return {};
-    return await Bun.file(path).json();
+    return (await Bun.file(path).json()) as Record<string, string>;
   }
+}
+
+function defaultCursor(): CursorFile {
+  return { sinceId: null, updatedAt: new Date(0).toISOString(), consecutivePollFailures: 0 };
+}
+
+function toCursorFile(raw: unknown): CursorFile {
+  if (typeof raw !== "object" || raw === null) {
+    return defaultCursor();
+  }
+
+  const value = raw as Record<string, unknown>;
+  return {
+    sinceId: typeof value.sinceId === "string" ? value.sinceId : null,
+    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : new Date(0).toISOString(),
+    consecutivePollFailures:
+      typeof value.consecutivePollFailures === "number" && Number.isFinite(value.consecutivePollFailures)
+        ? value.consecutivePollFailures
+        : 0,
+  };
 }
 
 async function renameOrFallback(from: string, to: string): Promise<void> {
   try {
-    await Bun.file(from).exists; // touch
-    const { rename } = await import("node:fs/promises");
+    await Bun.file(from).exists(); // touch
     await rename(from, to);
   } catch {
     // Fallback: read+write if rename fails (e.g. cross-device tmp).

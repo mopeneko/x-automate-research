@@ -1,5 +1,15 @@
 /** Domain types for X-List Market Summary. See CONTEXT.md for the glossary. */
 
+/** One declared Pipeline. Loaded from pipelines.json. */
+export interface PipelineConfig {
+  /** Filesystem-safe slug: [a-z0-9-]+. Used as store subdir and log/CLI identifier. */
+  id: string;
+  /** X List ID (numeric string from x.com/i/lists/<ID>). */
+  listId: string;
+  /** Telegram chat ID this Pipeline sends to (and receives Error Notifications). */
+  telegramChatId: string;
+}
+
 /** A post fetched from the X List. Stored verbatim in the Tweet Store. */
 export interface Tweet {
   /** Snowflake ID, monotonically increasing with time. Used for cursor comparison. */

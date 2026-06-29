@@ -27,10 +27,11 @@ export function sliceWindow(posts: Tweet[], windowName: WindowName): Tweet[] {
 /** Generate and persist an intraday Window Summary. Returns the summary text. */
 export async function summarizeWindow(
   config: Config,
+  pipelineId: string,
   windowName: WindowName,
   date: string,
 ): Promise<string> {
-  const store = new Store(config.storeDir);
+  const store = new Store(config.storeDir, pipelineId);
   const day = await store.readDay(date);
   const posts = sliceWindow(day.posts, windowName);
 
@@ -43,8 +44,8 @@ export async function summarizeWindow(
 }
 
 /** Generate the Daily Summary (hybrid: raw posts + intraday summaries). */
-export async function summarizeDaily(config: Config, date: string): Promise<string> {
-  const store = new Store(config.storeDir);
+export async function summarizeDaily(config: Config, pipelineId: string, date: string): Promise<string> {
+  const store = new Store(config.storeDir, pipelineId);
   const day = await store.readDay(date);
   const posts = summarizeablePosts(day.posts);
   const intraday = await store.readWindowSummaries(date);

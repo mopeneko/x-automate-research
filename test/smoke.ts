@@ -6,7 +6,6 @@ import { Store } from "../src/store.ts";
 import { sliceWindow, summarizeablePosts } from "../src/summarize.ts";
 import { splitForTelegram } from "../src/telegram.ts";
 import { jstDateKey, jstMinutesOfDay, inWindow, targetDateForSend } from "../src/time.ts";
-import { WINDOWS } from "../src/config.ts";
 import type { Tweet } from "../src/types.ts";
 
 let failures = 0;
@@ -64,19 +63,22 @@ assert(yoru.length === 1 && yoru[0]!.id === "3", "夜場 slices 17:00 post");
 
 // --- Store round-trip ---
 const tmpDir = `/tmp/store-test-${Date.now()}`;
-const store = new Store(tmpDir);
+const store = new Store(tmpDir, "test-pipeline");
 await store.init();
 const cursor0 = await store.readCursor();
 assert(cursor0.sinceId === null, "fresh store has null cursor");
+assert(cursor0.consecutivePollFailures === 0, "fresh store has 0 consecutive poll failures");
 
 const added = await store.appendPosts("2026-06-26", tweets);
 assert(added === 4, "append adds 4 new posts");
 const addedDup = await store.appendPosts("2026-06-26", tweets);
 assert(addedDup === 0, "dedup: re-append adds 0");
 
-await store.writeCursor({ sinceId: "999", updatedAt: new Date().toISOString() });
+await store.writeCursor({ sinceId: "999", updatedAt: new Date().toISOString(), consecutivePollFailures: 2 });
 const cursor1 = await store.readCursor();
 assert(cursor1.sinceId === "999", "cursor persists");
+assert(cursor1.consecutivePollFailures === 2, "cursor persists consecutive poll failures");
+assert(await Bun.file(`${tmpDir}/test-pipeline/cursor.json`).exists(), "cursor path includes pipeline id");
 
 await store.saveWindowSummary("2026-06-26", "朝場", "summary text");
 const summaries = await store.readWindowSummaries("2026-06-26");

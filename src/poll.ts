@@ -51,21 +51,15 @@ async function pollOnePipeline(config: Config, pipeline: PipelineConfig): Promis
         totalAdded += added;
         console.log(`${prefix} ${added} added to ${date}`);
       }
-
-      await store.writeCursor({
-        sinceId: SocialDataClient.newestId(posts, cursor.sinceId),
-        updatedAt: new Date().toISOString(),
-        consecutivePollFailures: cursor.consecutivePollFailures,
-      });
     }
 
-    if (cursor.consecutivePollFailures > 0) {
-      await store.writeCursor({
-        sinceId: posts.length > 0 ? SocialDataClient.newestId(posts, cursor.sinceId) : cursor.sinceId,
-        updatedAt: posts.length > 0 ? new Date().toISOString() : cursor.updatedAt,
-        consecutivePollFailures: 0,
-      });
-    }
+    // Always write cursor on success (ADR-0005 Q3c): empty result is still a
+    // successful poll. Update updatedAt to now and reset failure counter.
+    await store.writeCursor({
+      sinceId: posts.length > 0 ? SocialDataClient.newestId(posts, cursor.sinceId) : cursor.sinceId,
+      updatedAt: new Date().toISOString(),
+      consecutivePollFailures: 0,
+    });
 
     console.log(`${prefix} ok`);
     return totalAdded;

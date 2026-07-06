@@ -2,13 +2,13 @@ import type { Tweet } from "./types.ts";
 import { POLL_MAX_PAGES } from "./config.ts";
 
 /**
- * SocialData.tools client. `Get List Tweets` has no since_id parameter; pagination
- * is via cursor/next_cursor. We fetch pages newest-first and stop once we reach a
- * post already seen (by Snowflake id), so only genuinely new posts are billed.
- * See ADR-0001.
+ * SocialData.tools client using Get Search Results. The `list:{listId} since_id:{id}`
+ * query applies since_id as a server-side filter, so only newly-published posts are
+ * returned and billed. Pagination is via cursor/next_cursor; the query is fixed
+ * across pages. See ADR-0005.
  */
 
-const BASE = "https://api.socialdata.tools/twitter/list";
+const BASE = "https://api.socialdata.tools/twitter/search";
 
 interface SocialDataTweet {
   id_str: string;
@@ -31,16 +31,22 @@ export class SocialDataClient {
   constructor(private apiKey: string, private listId: string) {}
 
   /**
-   * Fetch all posts newer than `sinceId` (exclusive). Returns newest-first.
-   * Stops paginating when a post id <= sinceId is encountered, or after POLL_MAX_PAGES.
+   * Fetch posts via search endpoint. When sinceId is non-null, applies `since_id:{sinceId}`
+   * as a server-side filter (exclusive — matches prior `t.id_str <= sinceId` semantics).
+   * When sinceId is null (first run), fetches page 1 only to establish the cursor
+   * without billing for list history.
    */
   async fetchNewPosts(sinceId: string | null): Promise<Tweet[]> {
     const collected: Tweet[] = [];
     let cursor: string | undefined = undefined;
     let newestId: string | null = sinceId;
+    const query =
+      sinceId != null ? `list:${this.listId} since_id:${sinceId}` : `list:${this.listId}`;
 
     for (let page = 0; page < POLL_MAX_PAGES; page++) {
-      const url = new URL(`${BASE}/${this.listId}/tweets`);
+      const url = new URL(BASE);
+      url.searchParams.set("query", query);
+      url.searchParams.set("type", "Latest");
       if (cursor) url.searchParams.set("cursor", cursor);
 
       const res = await fetch(url, {
@@ -52,23 +58,17 @@ export class SocialDataClient {
       }
       const data = (await res.json()) as SocialDataResponse;
 
-      let reachedOld = false;
       for (const t of data.tweets ?? []) {
-        // Snowflake ids are lexicographically monotonic — string compare works.
-        if (sinceId != null && t.id_str <= sinceId) {
-          reachedOld = true;
-          break;
-        }
         collected.push(toTweet(t));
         if (!newestId || t.id_str > newestId) newestId = t.id_str;
       }
 
-      if (reachedOld) break;
+      if (sinceId == null) break;
+      if (data.tweets.length === 0) break;
       if (!data.next_cursor) break;
       cursor = data.next_cursor;
     }
 
-    // collected is newest-first per page; keep newest-first globally.
     collected.sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
     return collected;
   }

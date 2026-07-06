@@ -9,3 +9,5 @@ This was a real trade-off: the user has no X API tier, has a manual fallback if 
 - The X List must be set to public, exposing its membership to other users.
 - We must implement `since_id`-based pagination ourselves; SocialData has no deduplication, so every fetched post is billed.
 - The fetcher should be isolated behind an interface so we can swap providers (official API, self-scraping) without rewriting the summarization pipeline.
+
+> Update: The endpoint-specific consequence above ("we must implement since_id-based pagination ourselves") was superseded by [ADR-0005](0005-search-endpoint-for-list-posts.md). The provider decision (SocialData vs official X API) still holds.

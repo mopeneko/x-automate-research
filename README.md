@@ -12,7 +12,7 @@ cron (VPS, JST) ─┬─ */15 * * * *  → poll   (全Pipelineを順次ポー�
                  └─ 0  0 * * *    → send 夜場  (全Pipelineの 16:30-24:00 + Daily を2通送信)
 ```
 
-- **取得**: SocialData.tools `Get List Tweets`（公開リスト / since_id 相当のID比較で新規のみ課金）。各Pipelineが1つのX Listを持つ
+- **取得**: SocialData.tools `Get Search Results`（`list:{listId} since_id:{cursor}` クエリ / サーバ側 `since_id` フィルタで新規ポストのみ課金）。各Pipelineが1つのX Listを持つ
 - **要約**: Gemini 3.5 Flash（4セクション構造: 主要ニュース / 銘柄・テーマ動向 / センチメント / 注目ポイント）
 - **状態**: `store/<pipelineId>/YYYY-MM-DD.json`（Pipelineごとの日次ポスト）+ `store/<pipelineId>/cursor.json`（Fetch Cursor / アトミック書込）
 - **送信**: Telegram Bot API / プレーンテキスト / 4096字超過時は `(n/N)` マーカー付き自動分割。各Pipelineは自分のTelegram chatへ送る
@@ -100,7 +100,7 @@ bun run typecheck
 ```
 
 ## 想定コスト (1日500ポスト)
-- SocialData 取得: ~$3/月
+- SocialData 取得: ~$3/月（新規ポスト500件/日のみ課金 / `since_id` サーバフィルタでページ再課金なし）
 - Gemini 要約: ~$3.8/月
 - **合計: ~$7/月** (VPS除く)
 

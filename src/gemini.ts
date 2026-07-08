@@ -9,6 +9,45 @@ import type { Tweet, WindowName } from "./types.ts";
 const MODEL = "gemini-3.5-flash";
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
+/** Gemini caps thinking + visible output against maxOutputTokens. See ADR-0002. */
+interface GenerationProfile {
+  thinkingBudget: number;
+  maxOutputTokens: number;
+}
+
+const WINDOW_PROFILE: GenerationProfile = {
+  thinkingBudget: -1,
+  maxOutputTokens: 4096,
+};
+
+/** Daily has the largest prompt and often needs 6 sections (crypto). Reserve output budget. */
+const DAILY_PROFILE: GenerationProfile = {
+  thinkingBudget: 2048,
+  maxOutputTokens: 16_384,
+};
+
+const DAILY_FALLBACK_PROFILE: GenerationProfile = {
+  thinkingBudget: 0,
+  maxOutputTokens: 16_384,
+};
+
+interface GeminiPart {
+  text?: string;
+  thought?: boolean;
+}
+
+interface GeminiResponse {
+  candidates?: Array<{
+    content?: { parts?: GeminiPart[] };
+    finishReason?: string;
+  }>;
+  usageMetadata?: {
+    candidatesTokenCount?: number;
+    thoughtsTokenCount?: number;
+    totalTokenCount?: number;
+  };
+}
+
 /** Default Summarizer system instruction (Japanese equities context + Summary Schema). */
 export const DEFAULT_SYSTEM_PROMPT = `あなたは金融市場のツイート要約アナリストです。
 X（旧Twitter）の金融系リストのツイート群を受け取り、日本の株式市場の文脈で意味のある要約を生成します。
@@ -64,7 +103,7 @@ ${input}
 
 上記ツイート群を要約してください。`;
 
-    return await this.generate(userPrompt);
+    return await this.generate(userPrompt, "window");
   }
 
   /** Daily Summary via hybrid method: raw posts + intraday Window Summaries. */
@@ -88,18 +127,54 @@ ${summarySection || "（時間帯別要約なし）"}
 
 生ツイートの網羅性と時間帯別要約の整理済み視点を統合し、一日を通した市場動向の総括として出力してください。出力仕様はシステム指示に従うこと。`;
 
-    return await this.generate(userPrompt);
+    return await this.generate(userPrompt, "daily");
   }
 
-  private async generate(userPrompt: string): Promise<string> {
+  private async generate(userPrompt: string, kind: "window" | "daily"): Promise<string> {
+    const profiles = kind === "daily" ? [DAILY_PROFILE, DAILY_FALLBACK_PROFILE] : [WINDOW_PROFILE];
+
+    let lastError: unknown;
+    for (let i = 0; i < profiles.length; i++) {
+      const profile = profiles[i]!;
+      try {
+        const { text, finishReason, usage } = await this.callGemini(userPrompt, profile);
+        if (finishReason === "MAX_TOKENS") {
+          const usageHint = usage
+            ? ` thoughts=${usage.thoughtsTokenCount ?? 0} output=${usage.candidatesTokenCount ?? 0}`
+            : "";
+          throw new Error(`Gemini output truncated at ${text.length} chars (MAX_TOKENS${usageHint})`);
+        }
+        if (!text) {
+          throw new Error("Gemini returned empty visible response");
+        }
+        return text.trim();
+      } catch (err) {
+        lastError = err;
+        if (i < profiles.length - 1) {
+          const reason = err instanceof Error ? err.message : String(err);
+          console.warn(`[gemini.${kind}] profile ${i + 1}/${profiles.length} failed, retrying: ${reason}`);
+          continue;
+        }
+      }
+    }
+    throw lastError;
+  }
+
+  private async callGemini(
+    userPrompt: string,
+    profile: GenerationProfile,
+  ): Promise<{
+    text: string;
+    finishReason: string | undefined;
+    usage: GeminiResponse["usageMetadata"];
+  }> {
     const body = {
       contents: [{ role: "user", parts: [{ text: userPrompt }] }],
       systemInstruction: { parts: [{ text: this.systemPrompt }] },
       generationConfig: {
         temperature: 0.3,
-        // 3.5 Flash thinking: dynamic budget for nuanced financial synthesis.
-        thinkingConfig: { thinkingBudget: -1 },
-        maxOutputTokens: 4096,
+        thinkingConfig: { thinkingBudget: profile.thinkingBudget },
+        maxOutputTokens: profile.maxOutputTokens,
       },
     };
 
@@ -112,13 +187,24 @@ ${summarySection || "（時間帯別要約なし）"}
       const errText = await res.text();
       throw new Error(`Gemini ${res.status}: ${errText.slice(0, 500)}`);
     }
-    const data = (await res.json()) as any;
-    const text = data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
-    if (!text) {
-      throw new Error(`Gemini returned empty response: ${JSON.stringify(data).slice(0, 500)}`);
-    }
-    return text.trim();
+
+    const data = (await res.json()) as GeminiResponse;
+    const candidate = data.candidates?.[0];
+    const text = extractResponseText(candidate?.content?.parts ?? []);
+    return {
+      text,
+      finishReason: candidate?.finishReason,
+      usage: data.usageMetadata,
+    };
   }
+}
+
+/** Keep only visible answer parts; thinking content uses the same text field with thought=true. */
+export function extractResponseText(parts: GeminiPart[]): string {
+  return parts
+    .filter((part) => !part.thought)
+    .map((part) => part.text ?? "")
+    .join("");
 }
 
 function formatTweet(t: Tweet): string {

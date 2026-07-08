@@ -4,7 +4,7 @@
  * pipelines.json validation, and system-prompt resolution.
  */
 import { validatePipelines } from "../src/config.ts";
-import { DEFAULT_SYSTEM_PROMPT, resolveSystemPrompt } from "../src/gemini.ts";
+import { DEFAULT_SYSTEM_PROMPT, extractResponseText, resolveSystemPrompt } from "../src/gemini.ts";
 import { Store } from "../src/store.ts";
 import { sliceWindow, summarizeablePosts } from "../src/summarize.ts";
 import { splitForTelegram } from "../src/telegram.ts";
@@ -135,6 +135,19 @@ assertThrows(
 assert(resolveSystemPrompt(undefined) === DEFAULT_SYSTEM_PROMPT, "undefined systemPrompt uses default");
 assert(resolveSystemPrompt("custom override") === "custom override", "present systemPrompt fully replaces default");
 assert(!DEFAULT_SYSTEM_PROMPT.includes("custom override"), "default prompt is unchanged by override helper");
+
+// --- Gemini response parsing ---
+assert(
+  extractResponseText([
+    { text: "internal reasoning", thought: true },
+    { text: "visible answer" },
+  ]) === "visible answer",
+  "extractResponseText skips thought parts",
+);
+assert(
+  extractResponseText([{ text: "part1" }, { text: "part2" }]) === "part1part2",
+  "extractResponseText joins visible parts",
+);
 
 console.log("");
 if (failures === 0) {

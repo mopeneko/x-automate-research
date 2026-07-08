@@ -13,12 +13,12 @@ cron (VPS, JST) ─┬─ */15 * * * *  → poll   (全Pipelineを順次ポー�
 ```
 
 - **取得**: SocialData.tools `Get Search Results`（`list:{listId} since_id:{cursor}` クエリ / サーバ側 `since_id` フィルタで新規ポストのみ課金）。各Pipelineが1つのX Listを持つ
-- **要約**: Gemini 3.5 Flash（4セクション構造: 主要ニュース / 銘柄・テーマ動向 / センチメント / 注目ポイント）
+- **要約**: Gemini 3.5 Flash。既定は4セクション構造（主要ニュース / 銘柄・テーマ動向 / センチメント / 注目ポイント）。Pipelineごとに `systemPrompt` で上書き可能
 - **状態**: `store/<pipelineId>/YYYY-MM-DD.json`（Pipelineごとの日次ポスト）+ `store/<pipelineId>/cursor.json`（Fetch Cursor / アトミック書込）
 - **送信**: Telegram Bot API / プレーンテキスト / 4096字超過時は `(n/N)` マーカー付き自動分割。各Pipelineは自分のTelegram chatへ送る
 - **障害**: 3回リトライ指数バックオフ / 完全欠落時のみ失敗したPipeline自身のチャットに `⚠️` 通知
 
-1つの **Pipeline** は、1つの X List、1つの Telegram chat、そしてそのPipeline専用の Tweet Store + Fetch Cursor の組です。Summary Window / Summary Schema / Summarizer は全Pipelineで共有します。
+1つの **Pipeline** は、1つの X List、1つの Telegram chat、そのPipeline専用の Tweet Store + Fetch Cursor、および任意の Pipeline System Prompt の組です。Summary Window と Summarizer バックエンドは全Pipelineで共有しますが、`systemPrompt` がある Pipeline は要約の市場文脈と出力構造を自前で定義します。
 
 ## セットアップ
 
@@ -46,6 +46,12 @@ cp .env.example .env
     "id": "main",
     "listId": "1234567890123456789",
     "telegramChatId": "-1001234567890"
+  },
+  {
+    "id": "crypto",
+    "listId": "9876543210987654321",
+    "telegramChatId": "-1001987654321",
+    "systemPrompt": "あなたは暗号資産市場のツイート要約アナリストです。\n暗号通貨・トークン・チェーン・DeFi・マクロに関するツイート群を受け取り、暗号資産投資家向けの要約を生成します。\n\n【出力仕様】\n必ず以下の4セクション構造で出力すること。セクション見出しは記号付きで正確に：\n\n【主要ニュース】\n・（簡潔な箇条書き、3〜7項目）\n\n【トークン・テーマ動向】\n・$ティッカー または テーマ名: 動向（数値は原文から正確に保持）\n\n【センチメント】\n強気 / 中立 / 弱気 のいずれか1つ ＋ (好材料x / 悪材料y)\n\n【注目ポイント】\n・次の時間帯への引き継ぎ事項（1〜2項目）\n\n【ルール】\n- 出力は日本語。\n- 日本株・個別日本企業の文脈に無理に寄せない。リストが暗号資産ならその文脈で要約する。\n- ティッカーと数値は原文から正確に抽出し、改変しない。\n- 元ツイートへのリンク・URLは一切含めない。\n- 推測や憶測は加えず、ツイート内容に基づくこと。\n- セクション見出し以外のMarkdown記法は使わない。\n- ウィンドウ名のヘッダーは不要（呼び出し側で付与する）。"
   }
 ]
 ```
@@ -53,6 +59,7 @@ cp .env.example .env
 - `id`: filesystem-safe slug (`[a-z0-9-]+`)。`store/<id>/` やログ識別子に使われます。
 - `listId`: `x.com/i/lists/<ID>` の数値文字列
 - `telegramChatId`: そのPipelineの送信先Telegram chat ID（Error Notificationも同じチャット）
+- `systemPrompt` (任意): そのPipelineの Summarizer system instruction。**指定時は既定の日本株向けプロンプトを完全置換**します（出力仕様も含めて自己完結させてください）。未指定の Pipeline は従来どおり既定プロンプトを使います。
 
 既存の単一Pipeline環境から移行する場合は、従来のリスト/チャットを `main` として宣言し、既存の `store/*.json` を `store/main/` に移動してください。
 
@@ -120,7 +127,7 @@ src/
   send.ts        送信ジョブ (24:00は夜場+Dailyの2通)
   index.ts       エントリ (poll [pipelineId] | send <window> [pipelineId])
 test/smoke.ts    ロジック統合テスト
-pipelines.json   Pipeline定義 ({ id, listId, telegramChatId } の配列)
+pipelines.json   Pipeline定義 ({ id, listId, telegramChatId, systemPrompt? } の配列)
 CONTEXT.md       ドメイン用語集・決定一覧
 docs/adr/        アーキテクチャ決定記録
 ```

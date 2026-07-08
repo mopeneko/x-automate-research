@@ -67,7 +67,8 @@ function loadPipelines(): PipelineConfig[] {
   return validatePipelines(parsed);
 }
 
-function validatePipelines(raw: unknown): PipelineConfig[] {
+/** Validate and normalize a pipelines.json payload. Exported for tests. */
+export function validatePipelines(raw: unknown): PipelineConfig[] {
   if (!Array.isArray(raw)) {
     throw new Error("pipelines.json must contain a JSON array.");
   }
@@ -78,7 +79,9 @@ function validatePipelines(raw: unknown): PipelineConfig[] {
   const seen = new Set<string>();
   return raw.map((entry, index) => {
     if (!isPipelineConfig(entry)) {
-      throw new Error(`pipelines.json entry #${index + 1} must have non-empty id, listId, telegramChatId.`);
+      throw new Error(
+        `pipelines.json entry #${index + 1} must have non-empty id, listId, telegramChatId; systemPrompt if present must be a non-empty string.`,
+      );
     }
     if (!PIPELINE_ID_RE.test(entry.id)) {
       throw new Error(`pipelines.json entry #${index + 1} has invalid id '${entry.id}'. Use [a-z0-9-]+.`);
@@ -87,14 +90,30 @@ function validatePipelines(raw: unknown): PipelineConfig[] {
       throw new Error(`pipelines.json has duplicate pipeline id '${entry.id}'.`);
     }
     seen.add(entry.id);
-    return entry;
+
+    const config: PipelineConfig = {
+      id: entry.id,
+      listId: entry.listId,
+      telegramChatId: entry.telegramChatId,
+    };
+    if (entry.systemPrompt !== undefined) {
+      config.systemPrompt = entry.systemPrompt;
+    }
+    return config;
   });
 }
 
 function isPipelineConfig(value: unknown): value is PipelineConfig {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;
-  return isNonEmptyString(candidate.id) && isNonEmptyString(candidate.listId) && isNonEmptyString(candidate.telegramChatId);
+  if (!isNonEmptyString(candidate.id) || !isNonEmptyString(candidate.listId) || !isNonEmptyString(candidate.telegramChatId)) {
+    return false;
+  }
+  // systemPrompt is optional; when present it must be a non-empty string.
+  if (candidate.systemPrompt !== undefined && !isNonEmptyString(candidate.systemPrompt)) {
+    return false;
+  }
+  return true;
 }
 
 function isNonEmptyString(value: unknown): value is string {

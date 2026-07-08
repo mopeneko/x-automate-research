@@ -8,6 +8,11 @@ export interface PipelineConfig {
   listId: string;
   /** Telegram chat ID this Pipeline sends to (and receives Error Notifications). */
   telegramChatId: string;
+  /**
+   * Optional Pipeline System Prompt. When set, fully replaces the default
+   * Summarizer system instruction for this Pipeline (including output schema).
+   */
+  systemPrompt?: string;
 }
 
 /** A post fetched from the X List. Stored verbatim in the Tweet Store. */

@@ -42,8 +42,8 @@ async function sendOnePipeline(config: Config, pipeline: PipelineConfig, windowN
     for (const w of windowsToSend) {
       const text =
         w === "Daily"
-          ? await summarizeDaily(config, pipeline.id, date)
-          : await summarizeWindow(config, pipeline.id, w, date);
+          ? await summarizeDaily(config, pipeline.id, date, pipeline.systemPrompt)
+          : await summarizeWindow(config, pipeline.id, w, date, pipeline.systemPrompt);
 
       const header = `${WINDOW_HEADERS[w]} (${date})`;
       const message = `${header}\n\n${text}`;

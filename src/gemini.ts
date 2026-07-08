@@ -9,7 +9,8 @@ import type { Tweet, WindowName } from "./types.ts";
 const MODEL = "gemini-3.5-flash";
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
-const SYSTEM_PROMPT = `あなたは金融市場のツイート要約アナリストです。
+/** Default Summarizer system instruction (Japanese equities context + Summary Schema). */
+export const DEFAULT_SYSTEM_PROMPT = `あなたは金融市場のツイート要約アナリストです。
 X（旧Twitter）の金融系リストのツイート群を受け取り、日本の株式市場の文脈で意味のある要約を生成します。
 
 【出力仕様】
@@ -36,8 +37,19 @@ X（旧Twitter）の金融系リストのツイート群を受け取り、日本
 - セクション見出し以外のMarkdown記法は使わない。プレーンテキスト構造で出力。
 - ウィンドウ名のヘッダーは不要（呼び出し側で付与する）。`;
 
+/** Resolve which system instruction a Pipeline uses. Exported for tests. */
+export function resolveSystemPrompt(pipelineSystemPrompt?: string): string {
+  return pipelineSystemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+}
+
 export class GeminiSummarizer {
-  constructor(private apiKey: string) {}
+  private apiKey: string;
+  private systemPrompt: string;
+
+  constructor(apiKey: string, pipelineSystemPrompt?: string) {
+    this.apiKey = apiKey;
+    this.systemPrompt = resolveSystemPrompt(pipelineSystemPrompt);
+  }
 
   /** Summarize one intraday window from its raw posts. */
   async summarizeWindow(window: WindowName, posts: Tweet[]): Promise<string> {
@@ -74,7 +86,7 @@ ${rawSection}
 【当日の時間帯別要約（参考）】
 ${summarySection || "（時間帯別要約なし）"}
 
-生ツイートの網羅性と時間帯別要約の整理済み視点を統合し、一日を通した市場動向の総括として出力してください。出力仕様（4セクション構造）は同一です。`;
+生ツイートの網羅性と時間帯別要約の整理済み視点を統合し、一日を通した市場動向の総括として出力してください。出力仕様はシステム指示に従うこと。`;
 
     return await this.generate(userPrompt);
   }
@@ -82,7 +94,7 @@ ${summarySection || "（時間帯別要約なし）"}
   private async generate(userPrompt: string): Promise<string> {
     const body = {
       contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      systemInstruction: { parts: [{ text: this.systemPrompt }] },
       generationConfig: {
         temperature: 0.3,
         // 3.5 Flash thinking: dynamic budget for nuanced financial synthesis.

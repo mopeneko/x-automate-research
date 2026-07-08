@@ -1,7 +1,10 @@
 /**
  * Integration smoke test (no real API keys required).
- * Verifies: time windowing, post filtering, store round-trip, telegram splitting.
+ * Verifies: time windowing, post filtering, store round-trip, telegram splitting,
+ * pipelines.json validation, and system-prompt resolution.
  */
+import { validatePipelines } from "../src/config.ts";
+import { DEFAULT_SYSTEM_PROMPT, resolveSystemPrompt } from "../src/gemini.ts";
 import { Store } from "../src/store.ts";
 import { sliceWindow, summarizeablePosts } from "../src/summarize.ts";
 import { splitForTelegram } from "../src/telegram.ts";
@@ -14,6 +17,16 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     failures++;
   } else {
+    console.log(`✓ ${msg}`);
+  }
+}
+
+function assertThrows(fn: () => void, msg: string) {
+  try {
+    fn();
+    console.error(`✗ ${msg} (expected throw)`);
+    failures++;
+  } catch {
     console.log(`✓ ${msg}`);
   }
 }
@@ -97,6 +110,31 @@ assert(longChunks[0]!.startsWith("(1/2)"), "multi-chunk gets (1/2) marker");
 const multiLine = Array(200).fill("line of text here").join("\n");
 const mlChunks = splitForTelegram(multiLine);
 assert(mlChunks.every((c) => c.length <= 4096), "multiline chunks respect limit");
+
+// --- pipelines.json: optional systemPrompt ---
+const withoutPrompt = validatePipelines([
+  { id: "main", listId: "111", telegramChatId: "-100" },
+]);
+assert(withoutPrompt.length === 1 && withoutPrompt[0]!.systemPrompt === undefined, "missing systemPrompt stays valid");
+
+const withPrompt = validatePipelines([
+  { id: "crypto", listId: "222", telegramChatId: "-200", systemPrompt: "crypto analyst prompt" },
+]);
+assert(withPrompt[0]!.systemPrompt === "crypto analyst prompt", "present systemPrompt is accepted");
+
+assertThrows(
+  () => validatePipelines([{ id: "bad", listId: "333", telegramChatId: "-300", systemPrompt: "" }]),
+  "empty systemPrompt is rejected",
+);
+assertThrows(
+  () => validatePipelines([{ id: "bad", listId: "333", telegramChatId: "-300", systemPrompt: 1 }]),
+  "non-string systemPrompt is rejected",
+);
+
+// --- System prompt resolution ---
+assert(resolveSystemPrompt(undefined) === DEFAULT_SYSTEM_PROMPT, "undefined systemPrompt uses default");
+assert(resolveSystemPrompt("custom override") === "custom override", "present systemPrompt fully replaces default");
+assert(!DEFAULT_SYSTEM_PROMPT.includes("custom override"), "default prompt is unchanged by override helper");
 
 console.log("");
 if (failures === 0) {

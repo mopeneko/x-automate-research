@@ -30,12 +30,13 @@ export async function summarizeWindow(
   pipelineId: string,
   windowName: WindowName,
   date: string,
+  systemPrompt?: string,
 ): Promise<string> {
   const store = new Store(config.storeDir, pipelineId);
   const day = await store.readDay(date);
   const posts = sliceWindow(day.posts, windowName);
 
-  const summarizer = new GeminiSummarizer(config.geminiApiKey);
+  const summarizer = new GeminiSummarizer(config.geminiApiKey, systemPrompt);
   const text = await withRetry(`gemini.${windowName}`, () => summarizer.summarizeWindow(windowName, posts));
 
   await store.saveWindowSummary(date, windowName, text);
@@ -44,13 +45,18 @@ export async function summarizeWindow(
 }
 
 /** Generate the Daily Summary (hybrid: raw posts + intraday summaries). */
-export async function summarizeDaily(config: Config, pipelineId: string, date: string): Promise<string> {
+export async function summarizeDaily(
+  config: Config,
+  pipelineId: string,
+  date: string,
+  systemPrompt?: string,
+): Promise<string> {
   const store = new Store(config.storeDir, pipelineId);
   const day = await store.readDay(date);
   const posts = summarizeablePosts(day.posts);
   const intraday = await store.readWindowSummaries(date);
 
-  const summarizer = new GeminiSummarizer(config.geminiApiKey);
+  const summarizer = new GeminiSummarizer(config.geminiApiKey, systemPrompt);
   const text = await withRetry("gemini.Daily", () => summarizer.summarizeDaily(posts, intraday));
 
   await store.saveWindowSummary(date, "Daily", text);

@@ -4,7 +4,13 @@
  * pipelines.json validation, and system-prompt resolution.
  */
 import { validatePipelines } from "../src/config.ts";
-import { DEFAULT_SYSTEM_PROMPT, extractResponseText, resolveSystemPrompt } from "../src/gemini.ts";
+import {
+  DEFAULT_SYSTEM_PROMPT,
+  WINDOW_FALLBACK_PROFILE,
+  WINDOW_PROFILE,
+  extractResponseText,
+  resolveSystemPrompt,
+} from "../src/gemini.ts";
 import { Store } from "../src/store.ts";
 import { sliceWindow, summarizeablePosts } from "../src/summarize.ts";
 import { splitForTelegram } from "../src/telegram.ts";
@@ -147,6 +153,18 @@ assert(
 assert(
   extractResponseText([{ text: "part1" }, { text: "part2" }]) === "part1part2",
   "extractResponseText joins visible parts",
+);
+
+// --- Window generation budget (thinking + visible share maxOutputTokens) ---
+assert(WINDOW_PROFILE.thinkingBudget > 0, "window profile caps thinking (not dynamic -1)");
+assert(
+  WINDOW_PROFILE.thinkingBudget + 1024 <= WINDOW_PROFILE.maxOutputTokens,
+  "window profile reserves >=1024 tokens for visible output",
+);
+assert(WINDOW_FALLBACK_PROFILE.thinkingBudget === 0, "window fallback disables thinking");
+assert(
+  WINDOW_FALLBACK_PROFILE.maxOutputTokens >= WINDOW_PROFILE.maxOutputTokens,
+  "window fallback keeps at least the primary output budget",
 );
 
 console.log("");

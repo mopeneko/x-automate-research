@@ -10,14 +10,24 @@ const MODEL = "gemini-3.5-flash";
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
 /** Gemini caps thinking + visible output against maxOutputTokens. See ADR-0002. */
-interface GenerationProfile {
+export interface GenerationProfile {
   thinkingBudget: number;
   maxOutputTokens: number;
 }
 
-const WINDOW_PROFILE: GenerationProfile = {
-  thinkingBudget: -1,
-  maxOutputTokens: 4096,
+/**
+ * Dynamic thinking (-1) can consume nearly all of maxOutputTokens, leaving
+ * only a few hundred chars of visible summary (seen on crypto 朝場 2026-07-10).
+ * Cap thinking and keep a fallback that disables it.
+ */
+export const WINDOW_PROFILE: GenerationProfile = {
+  thinkingBudget: 2048,
+  maxOutputTokens: 8192,
+};
+
+export const WINDOW_FALLBACK_PROFILE: GenerationProfile = {
+  thinkingBudget: 0,
+  maxOutputTokens: 8192,
 };
 
 /** Daily has the largest prompt and often needs 6 sections (crypto). Reserve output budget. */
@@ -131,7 +141,9 @@ ${summarySection || "（時間帯別要約なし）"}
   }
 
   private async generate(userPrompt: string, kind: "window" | "daily"): Promise<string> {
-    const profiles = kind === "daily" ? [DAILY_PROFILE, DAILY_FALLBACK_PROFILE] : [WINDOW_PROFILE];
+    const profiles = kind === "daily"
+      ? [DAILY_PROFILE, DAILY_FALLBACK_PROFILE]
+      : [WINDOW_PROFILE, WINDOW_FALLBACK_PROFILE];
 
     let lastError: unknown;
     for (let i = 0; i < profiles.length; i++) {

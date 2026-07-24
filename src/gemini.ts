@@ -1,13 +1,27 @@
 import type { Tweet, WindowName } from "./types.ts";
+import { sleep } from "./retry.ts";
 
 /**
  * Summarizer: Gemini 3.5 Flash. Produces the four-section Summary Schema.
  * For Daily, uses the hybrid method (raw posts + intraday Window Summaries).
  * See ADR-0002.
+ *
+ * Capacity resilience: on 503/429 UNAVAILABLE (common at JST midnight / US peak),
+ * skip useless profile switches, let the outer retry wait longer, then fall back
+ * to a stabler Flash model before failing the send.
  */
 
-const MODEL = "gemini-3.5-flash";
-const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
+/** Preferred model; highest Finance Agent quality per ADR-0002. */
+export const PRIMARY_MODEL = "gemini-3.5-flash";
+
+/**
+ * Fallback when the primary model is capacity-exhausted.
+ * Prefer an older Flash generation that usually has spare capacity (Google's
+ * troubleshooting guidance: temporarily switch models on 503).
+ */
+export const FALLBACK_MODELS = ["gemini-3.1-flash", "gemini-2.5-flash"] as const;
+
+export const GEMINI_MODELS = [PRIMARY_MODEL, ...FALLBACK_MODELS] as const;
 
 /** Gemini caps thinking + visible output against maxOutputTokens. See ADR-0002. */
 export interface GenerationProfile {
@@ -56,6 +70,64 @@ interface GeminiResponse {
     thoughtsTokenCount?: number;
     totalTokenCount?: number;
   };
+}
+
+/** Typed Gemini HTTP failure so callers can classify capacity vs content errors. */
+export class GeminiApiError extends Error {
+  readonly status: number;
+  readonly body: string;
+  readonly model: string;
+
+  constructor(status: number, body: string, model: string) {
+    super(`Gemini ${status} (${model}): ${body.slice(0, 500)}`);
+    this.name = "GeminiApiError";
+    this.status = status;
+    this.body = body;
+    this.model = model;
+  }
+
+  /** True for transient overload / rate-limit responses that warrant wait + model fallback. */
+  get isCapacity(): boolean {
+    return isGeminiCapacityStatus(this.status, this.body);
+  }
+}
+
+/** Detect capacity / demand spikes from status + body (exported for tests). */
+export function isGeminiCapacityStatus(status: number, body: string): boolean {
+  if (status === 503 || status === 429) return true;
+  if (status >= 500 && status < 600) {
+    return /UNAVAILABLE|high demand|overloaded|RESOURCE_EXHAUSTED|try again later/i.test(body);
+  }
+  return /UNAVAILABLE|high demand|overloaded|RESOURCE_EXHAUSTED/i.test(body);
+}
+
+export function isGeminiCapacityError(err: unknown): boolean {
+  if (err instanceof GeminiApiError) return err.isCapacity;
+  if (err instanceof Error) {
+    return /Gemini (429|503)\b/i.test(err.message) ||
+      /high demand|UNAVAILABLE|overloaded|RESOURCE_EXHAUSTED/i.test(err.message);
+  }
+  return false;
+}
+
+/** Retry Gemini calls on capacity/5xx/network; do not retry hard client errors. */
+export function isRetryableGeminiError(err: unknown): boolean {
+  if (err instanceof GeminiApiError) {
+    return err.isCapacity || err.status >= 500 || err.status === 408;
+  }
+  if (err instanceof Error) {
+    const msg = err.message;
+    if (/Gemini (4\d\d)\b/.test(msg) && !/Gemini (408|429)\b/.test(msg)) {
+      // 400/401/403/404 etc. — not worth retrying
+      if (/Gemini (400|401|403|404)\b/.test(msg)) return false;
+    }
+    if (/Gemini (429|5\d\d)\b/.test(msg)) return true;
+    if (/fetch failed|network|ECONNRESET|ETIMEDOUT|socket/i.test(msg)) return true;
+    // Truncation / empty after profile fallback — retrying the same prompt rarely helps,
+    // but a later attempt (or fallback model) might; allow retry.
+    if (/truncated|empty visible/i.test(msg)) return true;
+  }
+  return true;
 }
 
 /** Default Summarizer system instruction (Japanese equities context + Summary Schema). */
@@ -141,6 +213,35 @@ ${summarySection || "（時間帯別要約なし）"}
   }
 
   private async generate(userPrompt: string, kind: "window" | "daily"): Promise<string> {
+    let lastError: unknown;
+
+    for (let m = 0; m < GEMINI_MODELS.length; m++) {
+      const model = GEMINI_MODELS[m]!;
+      try {
+        return await this.generateWithModel(userPrompt, kind, model);
+      } catch (err) {
+        lastError = err;
+        const hasFallback = m < GEMINI_MODELS.length - 1;
+        if (hasFallback && isGeminiCapacityError(err)) {
+          const reason = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[gemini.${kind}] model ${model} capacity-unavailable, falling back to ${GEMINI_MODELS[m + 1]}: ${reason}`,
+          );
+          await sleep(2_000);
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async generateWithModel(
+    userPrompt: string,
+    kind: "window" | "daily",
+    model: string,
+  ): Promise<string> {
     const profiles = kind === "daily"
       ? [DAILY_PROFILE, DAILY_FALLBACK_PROFILE]
       : [WINDOW_PROFILE, WINDOW_FALLBACK_PROFILE];
@@ -149,7 +250,7 @@ ${summarySection || "（時間帯別要約なし）"}
     for (let i = 0; i < profiles.length; i++) {
       const profile = profiles[i]!;
       try {
-        const { text, finishReason, usage } = await this.callGemini(userPrompt, profile);
+        const { text, finishReason, usage } = await this.callGemini(userPrompt, profile, model);
         if (finishReason === "MAX_TOKENS") {
           const usageHint = usage
             ? ` thoughts=${usage.thoughtsTokenCount ?? 0} output=${usage.candidatesTokenCount ?? 0}`
@@ -159,9 +260,16 @@ ${summarySection || "（時間帯別要約なし）"}
         if (!text) {
           throw new Error("Gemini returned empty visible response");
         }
+        if (model !== PRIMARY_MODEL) {
+          console.warn(`[gemini.${kind}] succeeded via fallback model ${model}`);
+        }
         return text.trim();
       } catch (err) {
         lastError = err;
+        // Capacity errors will fail the same way on every profile — don't burn attempts.
+        if (isGeminiCapacityError(err)) {
+          throw err;
+        }
         if (i < profiles.length - 1) {
           const reason = err instanceof Error ? err.message : String(err);
           console.warn(`[gemini.${kind}] profile ${i + 1}/${profiles.length} failed, retrying: ${reason}`);
@@ -175,6 +283,7 @@ ${summarySection || "（時間帯別要約なし）"}
   private async callGemini(
     userPrompt: string,
     profile: GenerationProfile,
+    model: string,
   ): Promise<{
     text: string;
     finishReason: string | undefined;
@@ -190,14 +299,15 @@ ${summarySection || "（時間帯別要約なし）"}
       },
     };
 
-    const res = await fetch(`${ENDPOINT}?key=${this.apiKey}`, {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+    const res = await fetch(`${endpoint}?key=${this.apiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Gemini ${res.status}: ${errText.slice(0, 500)}`);
+      throw new GeminiApiError(res.status, errText, model);
     }
 
     const data = (await res.json()) as GeminiResponse;

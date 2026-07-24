@@ -1,8 +1,8 @@
 import type { Config } from "./config.ts";
 import type { Tweet, WindowName } from "./types.ts";
-import { WINDOWS } from "./config.ts";
+import { GEMINI_RETRY_DELAYS_MS, WINDOWS } from "./config.ts";
 import { Store } from "./store.ts";
-import { GeminiSummarizer } from "./gemini.ts";
+import { GeminiSummarizer, isRetryableGeminiError } from "./gemini.ts";
 import { inWindow } from "./time.ts";
 import { withRetry } from "./retry.ts";
 
@@ -37,7 +37,11 @@ export async function summarizeWindow(
   const posts = sliceWindow(day.posts, windowName);
 
   const summarizer = new GeminiSummarizer(config.geminiApiKey, systemPrompt);
-  const text = await withRetry(`gemini.${windowName}`, () => summarizer.summarizeWindow(windowName, posts));
+  const text = await withRetry(
+    `gemini.${windowName}`,
+    () => summarizer.summarizeWindow(windowName, posts),
+    { delays: GEMINI_RETRY_DELAYS_MS, shouldRetry: isRetryableGeminiError },
+  );
 
   await store.saveWindowSummary(date, windowName, text);
   console.log(`[summarize] ${windowName} ${date}: ${posts.length} posts → ${text.length} chars`);
@@ -57,7 +61,11 @@ export async function summarizeDaily(
   const intraday = await store.readWindowSummaries(date);
 
   const summarizer = new GeminiSummarizer(config.geminiApiKey, systemPrompt);
-  const text = await withRetry("gemini.Daily", () => summarizer.summarizeDaily(posts, intraday));
+  const text = await withRetry(
+    "gemini.Daily",
+    () => summarizer.summarizeDaily(posts, intraday),
+    { delays: GEMINI_RETRY_DELAYS_MS, shouldRetry: isRetryableGeminiError },
+  );
 
   await store.saveWindowSummary(date, "Daily", text);
   console.log(`[summarize] Daily ${date}: ${posts.length} posts → ${text.length} chars`);

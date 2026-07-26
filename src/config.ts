@@ -17,6 +17,16 @@ export const WINDOWS: readonly WindowDef[] = [
 /** Retry policy: 3 attempts with exponential backoff (2s, 8s, 30s). */
 export const RETRY_DELAYS_MS = [2_000, 8_000, 30_000] as const;
 
+/**
+ * Gemini capacity (503/429) needs a longer window than generic retries.
+ * 夜場/Daily fire at JST 00:00 (= UTC 15:00), which overlaps US daytime demand spikes.
+ * Total wait ≈ 15s + 45s + 120s + 180s ≈ 6 minutes before giving up / model fallback.
+ */
+export const GEMINI_RETRY_DELAYS_MS = [15_000, 45_000, 120_000, 180_000] as const;
+
+/** Pause between sequential Gemini calls (夜場→Daily, Pipeline→Pipeline) to avoid burst 503s. */
+export const GEMINI_CALL_GAP_MS = 3_000;
+
 /** Polling: cap pages fetched per poll to bound cost on a bursty list. */
 export const POLL_MAX_PAGES = 5;
 

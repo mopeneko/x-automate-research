@@ -4,13 +4,21 @@
  * pipelines.json validation, and system-prompt resolution.
  */
 import { validatePipelines } from "../src/config.ts";
+import { GEMINI_RETRY_DELAYS_MS, RETRY_DELAYS_MS } from "../src/config.ts";
 import {
   DEFAULT_SYSTEM_PROMPT,
+  FALLBACK_MODELS,
+  GeminiApiError,
+  PRIMARY_MODEL,
   WINDOW_FALLBACK_PROFILE,
   WINDOW_PROFILE,
   extractResponseText,
+  isGeminiCapacityError,
+  isGeminiCapacityStatus,
+  isRetryableGeminiError,
   resolveSystemPrompt,
 } from "../src/gemini.ts";
+import { withJitter } from "../src/retry.ts";
 import { Store } from "../src/store.ts";
 import { sliceWindow, summarizeablePosts } from "../src/summarize.ts";
 import { splitForTelegram } from "../src/telegram.ts";
@@ -166,6 +174,41 @@ assert(
   WINDOW_FALLBACK_PROFILE.maxOutputTokens >= WINDOW_PROFILE.maxOutputTokens,
   "window fallback keeps at least the primary output budget",
 );
+
+// --- Gemini capacity / retry classification (夜場 503 high-demand) ---
+assert(PRIMARY_MODEL === "gemini-3.5-flash", "primary model stays 3.5 Flash");
+assert(FALLBACK_MODELS.length >= 1, "at least one fallback model configured");
+assert(
+  isGeminiCapacityStatus(
+    503,
+    '{"error":{"code":503,"message":"This model is currently experiencing high demand.","status":"UNAVAILABLE"}}',
+  ),
+  "503 high-demand body is capacity",
+);
+assert(isGeminiCapacityStatus(429, "RESOURCE_EXHAUSTED"), "429 is capacity");
+assert(!isGeminiCapacityStatus(400, "INVALID_ARGUMENT"), "400 is not capacity");
+
+const capacityErr = new GeminiApiError(
+  503,
+  '{"error":{"message":"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.","status":"UNAVAILABLE"}}',
+  PRIMARY_MODEL,
+);
+assert(capacityErr.isCapacity, "GeminiApiError.isCapacity for 503 UNAVAILABLE");
+assert(isGeminiCapacityError(capacityErr), "isGeminiCapacityError recognizes GeminiApiError");
+assert(isRetryableGeminiError(capacityErr), "503 capacity is retryable");
+assert(
+  isGeminiCapacityError(new Error('Gemini 503: {"error":{"status":"UNAVAILABLE"}}')),
+  "stringified 503 errors still classify as capacity",
+);
+assert(!isRetryableGeminiError(new GeminiApiError(400, "bad request", PRIMARY_MODEL)), "400 is not retryable");
+
+assert(GEMINI_RETRY_DELAYS_MS.length > RETRY_DELAYS_MS.length, "Gemini uses a longer retry schedule than generic I/O");
+assert(
+  GEMINI_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0) >= 5 * 60_000,
+  "Gemini capacity retries span at least ~5 minutes total",
+);
+const jittered = withJitter(1000, 0.2);
+assert(jittered >= 800 && jittered <= 1200, "withJitter stays within ±20%");
 
 console.log("");
 if (failures === 0) {

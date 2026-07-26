@@ -20,4 +20,5 @@ The decisive factor was Google's model card: on **Finance Agent v2** (financial 
 ## Consequences
 
 - We depend on the Google Gemini API and its `thinking` config semantics; the summarizer interface should isolate model-specific parameters so a future swap is contained.
+- `gemini-3.5-flash` is capacity-sensitive during US daytime, which overlaps the JST 00:00 夜場/Daily send. The runtime therefore treats 503/429 as capacity errors: longer backoff, no wasted thinking-profile switches, and automatic fallback to older Flash models before surfacing an Error Notification.
 - For the Daily Summary, we feed the three intraday summaries as context rather than re-feeding all raw tweets, keeping token usage flat regardless of tweet volume.

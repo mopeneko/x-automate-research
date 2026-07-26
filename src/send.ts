@@ -1,9 +1,10 @@
 import type { Config } from "./config.ts";
 import type { PipelineConfig, WindowName } from "./types.ts";
+import { GEMINI_CALL_GAP_MS } from "./config.ts";
 import { TelegramClient } from "./telegram.ts";
 import { summarizeWindow, summarizeDaily } from "./summarize.ts";
 import { targetDateForSend } from "./time.ts";
-import { withRetry } from "./retry.ts";
+import { sleep, withRetry } from "./retry.ts";
 
 /**
  * Send job: triggered at 12:30 / 16:30 / 24:00 JST cron.
@@ -22,7 +23,12 @@ const WINDOW_HEADERS: Record<WindowName, string> = {
 export async function runSend(config: Config, windowName: WindowName, pipelineId?: string): Promise<void> {
   const pipelines = selectPipelines(config, pipelineId);
 
-  for (const pipeline of pipelines) {
+  for (let i = 0; i < pipelines.length; i++) {
+    const pipeline = pipelines[i]!;
+    if (i > 0) {
+      // Pace Pipeline→Pipeline Gemini bursts (esp. 夜場+Daily at JST midnight).
+      await sleep(GEMINI_CALL_GAP_MS);
+    }
     try {
       await sendOnePipeline(config, pipeline, windowName);
     } catch {
@@ -39,7 +45,12 @@ async function sendOnePipeline(config: Config, pipeline: PipelineConfig, windowN
   try {
     const windowsToSend: WindowName[] = windowName === "夜場" ? ["夜場", "Daily"] : [windowName];
 
-    for (const w of windowsToSend) {
+    for (let i = 0; i < windowsToSend.length; i++) {
+      const w = windowsToSend[i]!;
+      if (i > 0) {
+        // 夜場 → Daily: avoid back-to-back generateContent during capacity spikes.
+        await sleep(GEMINI_CALL_GAP_MS);
+      }
       const text =
         w === "Daily"
           ? await summarizeDaily(config, pipeline.id, date, pipeline.systemPrompt)

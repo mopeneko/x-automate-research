@@ -31,6 +31,8 @@ export interface Tweet {
   isRetweet: boolean;
   /** True if this is a quote tweet. */
   isQuote: boolean;
+  /** URLs of attached images (e.g. photos/charts), if any. */
+  imageUrls?: string[];
 }
 
 /** Names of the four Summary Windows plus Daily. */

@@ -55,9 +55,13 @@ const DAILY_FALLBACK_PROFILE: GenerationProfile = {
   maxOutputTokens: 16_384,
 };
 
-interface GeminiPart {
+export interface GeminiPart {
   text?: string;
   thought?: boolean;
+  inlineData?: {
+    mimeType: string;
+    data: string; // base64
+  };
 }
 
 interface GeminiResponse {
@@ -152,8 +156,9 @@ X（旧Twitter）の金融系リストのツイート群を受け取り、日本
 【ルール】
 - 出力は日本語。
 - 銘柄コード（ティッカー）と数値は原文から正確に抽出し、改変しない。
+- 添付画像（チャート、決算資料、統計データ、ニュースキャプチャ等）がある場合、画像内の文字・数値・図表・トレンド等の情報も要約ソースとして抽出し反映すること。
 - 元ツイートへのリンク・URLは一切含めない。
-- 推測や憶測は加えず、ツイート内容に基づくこと。
+- 推測や憶測は加えず、ツイート内容および添付画像に基づくこと。
 - 扇情的な表現を避け、客観的に。
 - セクション見出し以外のMarkdown記法は使わない。プレーンテキスト構造で出力。
 - ウィンドウ名のヘッダーは不要（呼び出し側で付与する）。`;
@@ -174,18 +179,8 @@ export class GeminiSummarizer {
 
   /** Summarize one intraday window from its raw posts. */
   async summarizeWindow(window: WindowName, posts: Tweet[]): Promise<string> {
-    const input = posts.length === 0
-      ? "（この時間帯のツイートはありません）"
-      : posts.map(formatTweet).join("\n\n");
-
-    const userPrompt = `【要約対象ウィンドウ】${window}
-
-【ツイート群】
-${input}
-
-上記ツイート群を要約してください。`;
-
-    return await this.generate(userPrompt, "window");
+    const parts = await buildWindowPromptParts(window, posts);
+    return await this.generate(parts, "window");
   }
 
   /** Daily Summary via hybrid method: raw posts + intraday Window Summaries. */
@@ -209,16 +204,16 @@ ${summarySection || "（時間帯別要約なし）"}
 
 生ツイートの網羅性と時間帯別要約の整理済み視点を統合し、一日を通した市場動向の総括として出力してください。出力仕様はシステム指示に従うこと。`;
 
-    return await this.generate(userPrompt, "daily");
+    return await this.generate([{ text: userPrompt }], "daily");
   }
 
-  private async generate(userPrompt: string, kind: "window" | "daily"): Promise<string> {
+  private async generate(parts: GeminiPart[], kind: "window" | "daily"): Promise<string> {
     let lastError: unknown;
 
     for (let m = 0; m < GEMINI_MODELS.length; m++) {
       const model = GEMINI_MODELS[m]!;
       try {
-        return await this.generateWithModel(userPrompt, kind, model);
+        return await this.generateWithModel(parts, kind, model);
       } catch (err) {
         lastError = err;
         const hasFallback = m < GEMINI_MODELS.length - 1;
@@ -238,7 +233,7 @@ ${summarySection || "（時間帯別要約なし）"}
   }
 
   private async generateWithModel(
-    userPrompt: string,
+    parts: GeminiPart[],
     kind: "window" | "daily",
     model: string,
   ): Promise<string> {
@@ -250,7 +245,7 @@ ${summarySection || "（時間帯別要約なし）"}
     for (let i = 0; i < profiles.length; i++) {
       const profile = profiles[i]!;
       try {
-        const { text, finishReason, usage } = await this.callGemini(userPrompt, profile, model);
+        const { text, finishReason, usage } = await this.callGemini(parts, profile, model);
         if (finishReason === "MAX_TOKENS") {
           const usageHint = usage
             ? ` thoughts=${usage.thoughtsTokenCount ?? 0} output=${usage.candidatesTokenCount ?? 0}`
@@ -281,7 +276,7 @@ ${summarySection || "（時間帯別要約なし）"}
   }
 
   private async callGemini(
-    userPrompt: string,
+    parts: GeminiPart[],
     profile: GenerationProfile,
     model: string,
   ): Promise<{
@@ -290,7 +285,7 @@ ${summarySection || "（時間帯別要約なし）"}
     usage: GeminiResponse["usageMetadata"];
   }> {
     const body = {
-      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+      contents: [{ role: "user", parts }],
       systemInstruction: { parts: [{ text: this.systemPrompt }] },
       generationConfig: {
         temperature: 0.3,
@@ -329,8 +324,94 @@ export function extractResponseText(parts: GeminiPart[]): string {
     .join("");
 }
 
-function formatTweet(t: Tweet): string {
+export function formatTweet(t: Tweet): string {
   const time = t.createdAt.replace("T", " ").replace(/\.\d+Z$/, "Z");
   const prefix = t.isRetweet ? "[RT] " : t.isQuote ? "[QT] " : "";
-  return `${time} @${t.author}: ${prefix}${t.text}`;
+  const imageNote = t.imageUrls && t.imageUrls.length > 0 ? ` [画像${t.imageUrls.length}枚添付]` : "";
+  return `${time} @${t.author}: ${prefix}${t.text}${imageNote}`;
+}
+export async function fetchImageAsPart(url: string, timeoutMs = 5000): Promise<GeminiPart | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { Accept: "image/*" },
+    });
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      console.warn(`[gemini.image] failed to fetch image ${url}: HTTP ${res.status}`);
+      return null;
+    }
+
+    const contentType = res.headers.get("content-type") || "image/jpeg";
+    const mimeType = contentType.split(";")[0]!.trim();
+    const arrayBuffer = await res.arrayBuffer();
+    const base64 = Buffer.from(arrayBuffer).toString("base64");
+
+    return {
+      inlineData: {
+        mimeType,
+        data: base64,
+      },
+    };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(`[gemini.image] error fetching image ${url}: ${reason}`);
+    return null;
+  }
+}
+
+/**
+ * Build Gemini request parts for a list of posts in a Window Summary,
+ * embedding inline images if present.
+ */
+export async function buildWindowPromptParts(
+  window: WindowName,
+  posts: Tweet[],
+): Promise<GeminiPart[]> {
+  if (posts.length === 0) {
+    return [
+      {
+        text: `【要約対象ウィンドウ】${window}
+
+【ツイート群】
+（この時間帯のツイートはありません）
+
+上記ツイート群を要約してください。`,
+      },
+    ];
+  }
+
+  const parts: GeminiPart[] = [
+    {
+      text: `【要約対象ウィンドウ】${window}\n\n【ツイート群】\n`,
+    },
+  ];
+
+  for (let i = 0; i < posts.length; i++) {
+    const post = posts[i]!;
+    const postHeader = `${i > 0 ? "\n\n" : ""}${formatTweet(post)}`;
+
+    const imageParts: GeminiPart[] = [];
+    if (post.imageUrls && post.imageUrls.length > 0) {
+      const fetched = await Promise.all(post.imageUrls.map((url) => fetchImageAsPart(url)));
+      for (const img of fetched) {
+        if (img) imageParts.push(img);
+      }
+    }
+
+    parts.push({ text: postHeader });
+    for (const imgPart of imageParts) {
+      parts.push(imgPart);
+    }
+  }
+
+  parts.push({
+    text: `\n\n上記ツイート群および添付画像（チャート、決算資料、統計データ、ニュースキャプチャ等）を精査して要約してください。`,
+  });
+
+  return parts;
 }

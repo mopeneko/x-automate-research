@@ -12,12 +12,15 @@ import {
   PRIMARY_MODEL,
   WINDOW_FALLBACK_PROFILE,
   WINDOW_PROFILE,
+  buildWindowPromptParts,
   extractResponseText,
+  formatTweet,
   isGeminiCapacityError,
   isGeminiCapacityStatus,
   isRetryableGeminiError,
   resolveSystemPrompt,
 } from "../src/gemini.ts";
+import { extractImageUrls } from "../src/socialdata.ts";
 import { withJitter } from "../src/retry.ts";
 import { Store } from "../src/store.ts";
 import { sliceWindow, summarizeablePosts } from "../src/summarize.ts";
@@ -65,15 +68,62 @@ assert(targetDateForSend("夜場", t0000jst) === "2026-06-26", "夜場 sent at 0
 assert(targetDateForSend("Daily", t0000jst) === "2026-06-26", "Daily sent at 00:00 JST targets prev day");
 assert(targetDateForSend("朝場", t1200jst) === "2026-06-26", "朝場 sent at 12:30 JST targets same day");
 
-// --- Post filter ---
+// --- Post filter & images ---
 const tweets: Tweet[] = [
   { id: "100", text: "normal tweet", createdAt: "2026-06-26T03:00:00Z", author: "a", isReply: false, isRetweet: false, isQuote: false },
   { id: "101", text: "@x reply", createdAt: "2026-06-26T03:01:00Z", author: "a", isReply: true, isRetweet: false, isQuote: false },
   { id: "102", text: "RT @y: hi", createdAt: "2026-06-26T03:02:00Z", author: "a", isReply: false, isRetweet: true, isQuote: false },
-  { id: "103", text: "quote", createdAt: "2026-06-26T03:03:00Z", author: "a", isReply: false, isRetweet: false, isQuote: true },
+  { id: "103", text: "quote", createdAt: "2026-06-26T03:03:00Z", author: "a", isReply: false, isRetweet: false, isQuote: true, imageUrls: ["https://pbs.twimg.com/media/test.jpg"] },
 ];
 const filtered = summarizeablePosts(tweets);
 assert(filtered.length === 3, "replies excluded, RT/quote kept (3 of 4)");
+
+// --- SocialData image extraction ---
+const sdTweetWithMedia = {
+  id_str: "200",
+  full_text: "chart attached",
+  tweet_created_at: "2026-06-26T03:00:00Z",
+  in_reply_to_status_id_str: null,
+  is_quote_status: false,
+  retweeted_status: null,
+  quoted_status: null,
+  extended_entities: {
+    media: [
+      { type: "photo", media_url_https: "https://pbs.twimg.com/media/photo1.jpg" },
+      { type: "video", media_url_https: "https://pbs.twimg.com/media/video.mp4" },
+      { type: "photo", media_url_https: "https://pbs.twimg.com/media/photo2.png" },
+    ],
+  },
+};
+const extractedUrls = extractImageUrls(sdTweetWithMedia);
+assert(
+  extractedUrls?.length === 2 &&
+    extractedUrls[0] === "https://pbs.twimg.com/media/photo1.jpg" &&
+    extractedUrls[1] === "https://pbs.twimg.com/media/photo2.png",
+  "extractImageUrls filters photos from extended_entities",
+);
+
+const sdTweetNoMedia = {
+  id_str: "201",
+  full_text: "no media",
+  tweet_created_at: "2026-06-26T03:00:00Z",
+  in_reply_to_status_id_str: null,
+  is_quote_status: false,
+  retweeted_status: null,
+  quoted_status: null,
+};
+assert(extractImageUrls(sdTweetNoMedia) === undefined, "extractImageUrls returns undefined when no media");
+
+// --- Tweet formatting with image note ---
+const formattedWithImage = formatTweet(tweets[3]!);
+assert(formattedWithImage.includes("[画像1枚添付]"), "formatTweet includes image count note");
+
+// --- Gemini multimodal parts builder ---
+const promptPartsEmpty = await buildWindowPromptParts("朝場", []);
+assert(promptPartsEmpty.length === 1 && promptPartsEmpty[0]!.text!.includes("（この時間帯のツイートはありません）"), "empty posts prompt parts");
+
+const promptPartsWithPost = await buildWindowPromptParts("朝場", [tweets[0]!]);
+assert(promptPartsWithPost.length === 3, "prompt parts with post contains header, post text, and instruction");
 
 // --- Window slicing ---
 const allDay: Tweet[] = [

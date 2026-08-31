@@ -10,6 +10,11 @@ import { POLL_MAX_PAGES } from "./config.ts";
 
 const BASE = "https://api.socialdata.tools/twitter/search";
 
+interface SocialDataMedia {
+  type?: string;
+  media_url_https?: string;
+}
+
 interface SocialDataTweet {
   id_str: string;
   full_text: string | null;
@@ -20,6 +25,12 @@ interface SocialDataTweet {
   retweeted_status: unknown | null;
   quoted_status: unknown | null;
   user?: { screen_name: string };
+  entities?: {
+    media?: SocialDataMedia[];
+  };
+  extended_entities?: {
+    media?: SocialDataMedia[];
+  };
 }
 
 interface SocialDataResponse {
@@ -80,7 +91,19 @@ export class SocialDataClient {
   }
 }
 
+export function extractImageUrls(t: SocialDataTweet): string[] | undefined {
+  const mediaList = t.extended_entities?.media ?? t.entities?.media ?? [];
+  const urls: string[] = [];
+  for (const m of mediaList) {
+    if ((m.type === "photo" || !m.type) && m.media_url_https) {
+      urls.push(m.media_url_https);
+    }
+  }
+  return urls.length > 0 ? urls : undefined;
+}
+
 function toTweet(t: SocialDataTweet): Tweet {
+  const imageUrls = extractImageUrls(t);
   return {
     id: t.id_str,
     text: t.full_text ?? t.text ?? "",
@@ -89,5 +112,6 @@ function toTweet(t: SocialDataTweet): Tweet {
     isReply: t.in_reply_to_status_id_str != null,
     isRetweet: t.retweeted_status != null,
     isQuote: !!t.is_quote_status || t.quoted_status != null,
+    ...(imageUrls ? { imageUrls } : {}),
   };
 }

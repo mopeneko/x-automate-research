@@ -2,7 +2,7 @@ import type { Tweet, WindowName } from "./types.ts";
 import { sleep } from "./retry.ts";
 
 /**
- * Summarizer: Gemini 3.5 Flash. Produces the four-section Summary Schema.
+ * Summarizer: Gemini 3.8 Flash. Produces the four-section Summary Schema.
  * For Daily, uses the hybrid method (raw posts + intraday Window Summaries).
  * See ADR-0002.
  *
@@ -11,47 +11,64 @@ import { sleep } from "./retry.ts";
  * to a stabler Flash model before failing the send.
  */
 
-/** Preferred model; highest Finance Agent quality per ADR-0002. */
-export const PRIMARY_MODEL = "gemini-3.5-flash";
+/** Preferred model; Gemini 3.8 Flash (released Sep 2, 2026). See ADR-0002. */
+export const PRIMARY_MODEL = "gemini-3.8-flash";
 
 /**
  * Fallback when the primary model is capacity-exhausted.
  * Prefer an older Flash generation that usually has spare capacity (Google's
  * troubleshooting guidance: temporarily switch models on 503).
  */
-export const FALLBACK_MODELS = ["gemini-3.1-flash", "gemini-2.5-flash"] as const;
+export const FALLBACK_MODELS = [
+  "gemini-3.5-flash",
+  "gemini-3.1-flash",
+  "gemini-2.5-flash",
+] as const;
 
 export const GEMINI_MODELS = [PRIMARY_MODEL, ...FALLBACK_MODELS] as const;
 
-/** Gemini caps thinking + visible output against maxOutputTokens. See ADR-0002. */
+/** Gemini 3.8+ uses an enum; older Flash models still accept a token budget. */
+export type ThinkingLevel = "low" | "medium" | "high";
+
+/**
+ * Dual thinking knobs: 3.8 Flash rejects thinkingBudget; older fallbacks still
+ * need it. Dynamic thinking (-1) on older models can starve visible output
+ * (seen on crypto 朝場 2026-07-10), so budget profiles stay capped.
+ */
 export interface GenerationProfile {
   thinkingBudget: number;
+  thinkingLevel: ThinkingLevel;
   maxOutputTokens: number;
 }
 
-/**
- * Dynamic thinking (-1) can consume nearly all of maxOutputTokens, leaving
- * only a few hundred chars of visible summary (seen on crypto 朝場 2026-07-10).
- * Cap thinking and keep a fallback that disables it.
- */
+/** 3.8+ rejects thinkingBudget / temperature; older Flash still needs them. */
+export function usesThinkingLevel(model: string): boolean {
+  return model === PRIMARY_MODEL || /^gemini-3\.[789]\b/.test(model);
+}
+
 export const WINDOW_PROFILE: GenerationProfile = {
   thinkingBudget: 2048,
+  thinkingLevel: "medium",
   maxOutputTokens: 8192,
 };
 
+/** Older models: budget 0 disables thinking. 3.8: lowest allowed level is low. */
 export const WINDOW_FALLBACK_PROFILE: GenerationProfile = {
   thinkingBudget: 0,
+  thinkingLevel: "low",
   maxOutputTokens: 8192,
 };
 
 /** Daily has the largest prompt and often needs 6 sections (crypto). Reserve output budget. */
 const DAILY_PROFILE: GenerationProfile = {
   thinkingBudget: 2048,
+  thinkingLevel: "medium",
   maxOutputTokens: 16_384,
 };
 
 const DAILY_FALLBACK_PROFILE: GenerationProfile = {
   thinkingBudget: 0,
+  thinkingLevel: "low",
   maxOutputTokens: 16_384,
 };
 
@@ -284,14 +301,22 @@ ${summarySection || "（時間帯別要約なし）"}
     finishReason: string | undefined;
     usage: GeminiResponse["usageMetadata"];
   }> {
+    const levelMode = usesThinkingLevel(model);
+    const generationConfig: Record<string, unknown> = {
+      thinkingConfig: levelMode
+        ? { thinkingLevel: profile.thinkingLevel }
+        : { thinkingBudget: profile.thinkingBudget },
+      maxOutputTokens: profile.maxOutputTokens,
+    };
+    // Temperature is deprecated/unsupported on Gemini 3.8+; keep for older fallbacks.
+    if (!levelMode) {
+      generationConfig.temperature = 0.3;
+    }
+
     const body = {
       contents: [{ role: "user", parts }],
       systemInstruction: { parts: [{ text: this.systemPrompt }] },
-      generationConfig: {
-        temperature: 0.3,
-        thinkingConfig: { thinkingBudget: profile.thinkingBudget },
-        maxOutputTokens: profile.maxOutputTokens,
-      },
+      generationConfig,
     };
 
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;

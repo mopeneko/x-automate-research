@@ -13,7 +13,7 @@ cron (VPS, JST) ─┬─ */15 * * * *  → poll   (全Pipelineを順次ポー�
 ```
 
 - **取得**: SocialData.tools `Get Search Results`（`list:{listId} since_id:{cursor}` クエリ / サーバ側 `since_id` フィルタで新規ポストのみ課金）。各Pipelineが1つのX Listを持つ
-- **要約**: Gemini 3.5 Flash。既定は4セクション構造（主要ニュース / 銘柄・テーマ動向 / センチメント / 注目ポイント）。Pipelineごとに `systemPrompt` で上書き可能
+- **要約**: Gemini 3.8 Flash。既定は4セクション構造（主要ニュース / 銘柄・テーマ動向 / センチメント / 注目ポイント）。Pipelineごとに `systemPrompt` で上書き可能
 - **状態**: `store/<pipelineId>/YYYY-MM-DD.json`（Pipelineごとの日次ポスト）+ `store/<pipelineId>/cursor.json`（Fetch Cursor / アトミック書込）
 - **送信**: Telegram Bot API / プレーンテキスト / 4096字超過時は `(n/N)` マーカー付き自動分割。各Pipelineは自分のTelegram chatへ送る
 - **障害**: 汎用I/Oは3回リトライ。Geminiの503/429（深夜の高負荷）は長めのバックオフ＋Flashモデルフォールバック。完全欠落時のみ失敗したPipeline自身のチャットに `⚠️` 通知
@@ -119,7 +119,7 @@ src/
   time.ts        JST時刻処理・ウィンドウ判定
   store.ts       Tweet Store (Pipeline別の日次JSON + cursor.json / アトミック書込)
   socialdata.ts  SocialData API クライアント
-  gemini.ts      Summarizer (Gemini 3.5 Flash / 4セクション要約)
+  gemini.ts      Summarizer (Gemini 3.8 Flash / 4セクション要約)
   telegram.ts    Telegram送信クライアント (4096字自動分割)
   retry.ts       指数バックオフリトライ
   poll.ts        ポーリングジョブ

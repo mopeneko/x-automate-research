@@ -1,24 +1,26 @@
-# Summarize with Gemini 3.5 Flash
+# Summarize with Gemini 3.8 Flash
 
-We chose **Gemini 3.5 Flash** (released May 19, 2026) as the Summarizer over both cheaper Flash variants and more expensive frontier models.
+> **Updated 2026-09-04:** primary model upgraded from Gemini 3.5 Flash → **Gemini 3.8 Flash** (`gemini-3.8-flash`). Filename kept for stable links.
 
-The decisive factor was Google's model card: on **Finance Agent v2** (financial analysis and decision-making), Gemini 3.5 Flash scores **57.9%**, beating Claude Sonnet 4.6 (51.0%), Opus 4.7 (51.5%), and GPT-5.5 (51.8%). This benchmark maps directly to our use case — extracting market signals from financial tweeters. For a summary task, paying Opus/GPT-5.5-pro prices ($15-30/M input) would be overkill, while the older 3.1 Flash sacrifices quality we can get for ~$4/month.
+We chose **Gemini 3.8 Flash** (released September 2, 2026) as the Summarizer over both cheaper Flash variants and more expensive frontier models.
+
+3.8 is the current Flash workhorse at the same introductory price as 3.7 ($0.75 / $3.75 per 1M tokens through 2026-12-31), with stronger multi-step reasoning — useful for extracting market signals from financial tweeters. For a summary task, paying Opus/GPT frontier prices would be overkill, while older Flash generations (3.5 / 3.1) remain capacity fallbacks only.
 
 ## Context
 
 - **1M token input context** lets us feed an entire window's tweets (and, for the Daily Summary, all three sub-window summaries) in a single request — no chunking or map-reduce pipeline.
 - **64K token output** is ample for a window summary.
-- **thinking levels** let us trade latency for quality per window; we can run cheaper/faster for the intraday windows and richer for the Daily.
-- At our workload (~2.1M input + ~75K output tokens/month), cost is ~$3.8/month — comparable to the SocialData fetch cost and negligible versus the value delivered.
+- **thinking levels** (`low` / `medium` / `high`) replace the older integer `thinkingBudget` on 3.8+; we run `medium` for primary summaries and `low` on profile fallback (3.8 cannot disable thinking). Older fallback models still use `thinkingBudget`.
+- At our workload (~2.1M input + ~75K output tokens/month), cost remains on the order of a few dollars/month — comparable to the SocialData fetch cost and negligible versus the value delivered.
 
 ## Considered options
 
-- **Gemini 3.1 Flash** — cheaper (~$1.3/mo) but an older generation; weaker on finance/long-context benchmarks.
-- **Claude Sonnet 4.5** — strong Japanese summarization, ~$8/mo, but no 1M-context single-shot and lower Finance Agent score.
-- **gpt-5.4-nano** — cheapest (~$0.55/mo) but lower quality on nuanced financial text.
+- **Gemini 3.5 Flash** — previous primary; still the first capacity fallback.
+- **Gemini 3.1 Flash** — cheaper but an older generation; weaker on finance/long-context benchmarks.
+- **Claude Sonnet / GPT frontier** — strong summarization but higher cost and no advantage for this volume/shape of work.
 
 ## Consequences
 
-- We depend on the Google Gemini API and its `thinking` config semantics; the summarizer interface should isolate model-specific parameters so a future swap is contained.
-- `gemini-3.5-flash` is capacity-sensitive during US daytime, which overlaps the JST 00:00 夜場/Daily send. The runtime therefore treats 503/429 as capacity errors: longer backoff, no wasted thinking-profile switches, and automatic fallback to older Flash models before surfacing an Error Notification.
+- We depend on the Google Gemini API; 3.8 rejects `thinkingBudget` and deprecates sampling knobs like `temperature`, so `callGemini` branches on `usesThinkingLevel(model)`.
+- `gemini-3.8-flash` can still be capacity-sensitive during US daytime, which overlaps the JST 00:00 夜場/Daily send. The runtime therefore treats 503/429 as capacity errors: longer backoff, no wasted thinking-profile switches, and automatic fallback across Flash models (`3.8` → `3.5` → `3.1` → `2.5`) before surfacing an Error Notification.
 - For the Daily Summary, we feed the three intraday summaries as context rather than re-feeding all raw tweets, keeping token usage flat regardless of tweet volume.

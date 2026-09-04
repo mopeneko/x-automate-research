@@ -19,6 +19,7 @@ import {
   isGeminiCapacityStatus,
   isRetryableGeminiError,
   resolveSystemPrompt,
+  usesThinkingLevel,
 } from "../src/gemini.ts";
 import { extractImageUrls } from "../src/socialdata.ts";
 import { withJitter } from "../src/retry.ts";
@@ -219,14 +220,19 @@ assert(
   WINDOW_PROFILE.thinkingBudget + 1024 <= WINDOW_PROFILE.maxOutputTokens,
   "window profile reserves >=1024 tokens for visible output",
 );
-assert(WINDOW_FALLBACK_PROFILE.thinkingBudget === 0, "window fallback disables thinking");
+assert(WINDOW_PROFILE.thinkingLevel === "medium", "window primary uses medium thinking level");
+assert(WINDOW_FALLBACK_PROFILE.thinkingBudget === 0, "window fallback disables thinking on budget models");
+assert(WINDOW_FALLBACK_PROFILE.thinkingLevel === "low", "window fallback uses lowest 3.8 thinking level");
 assert(
   WINDOW_FALLBACK_PROFILE.maxOutputTokens >= WINDOW_PROFILE.maxOutputTokens,
   "window fallback keeps at least the primary output budget",
 );
+assert(usesThinkingLevel(PRIMARY_MODEL), "3.8 Flash uses thinkingLevel");
+assert(!usesThinkingLevel("gemini-3.5-flash"), "3.5 Flash keeps thinkingBudget");
 
 // --- Gemini capacity / retry classification (夜場 503 high-demand) ---
-assert(PRIMARY_MODEL === "gemini-3.5-flash", "primary model stays 3.5 Flash");
+assert(PRIMARY_MODEL === "gemini-3.8-flash", "primary model is 3.8 Flash");
+assert(FALLBACK_MODELS[0] === "gemini-3.5-flash", "first fallback is previous primary");
 assert(FALLBACK_MODELS.length >= 1, "at least one fallback model configured");
 assert(
   isGeminiCapacityStatus(

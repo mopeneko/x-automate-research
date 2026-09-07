@@ -8,8 +8,10 @@ import { GEMINI_RETRY_DELAYS_MS, RETRY_DELAYS_MS } from "../src/config.ts";
 import {
   DEFAULT_SYSTEM_PROMPT,
   FALLBACK_MODELS,
+  GEMINI_REQUEST_TIMEOUT_MS,
   GeminiApiError,
   PRIMARY_MODEL,
+  SERVICE_TIER,
   WINDOW_FALLBACK_PROFILE,
   WINDOW_PROFILE,
   buildWindowPromptParts,
@@ -232,8 +234,17 @@ assert(!usesThinkingLevel("gemini-3.5-flash"), "3.5 Flash keeps thinkingBudget")
 
 // --- Gemini capacity / retry classification (夜場 503 high-demand) ---
 assert(PRIMARY_MODEL === "gemini-3.8-flash", "primary model is 3.8 Flash");
+assert(SERVICE_TIER === "flex", "summarizer uses Flex inference tier");
+assert(
+  GEMINI_REQUEST_TIMEOUT_MS >= 600_000,
+  "Flex client timeout is at least 10 minutes",
+);
 assert(FALLBACK_MODELS[0] === "gemini-3.5-flash", "first fallback is previous primary");
 assert(FALLBACK_MODELS.length >= 1, "at least one fallback model configured");
+assert(
+  isRetryableGeminiError(new Error("Gemini request timed out after 900000ms (gemini-3.8-flash, flex)")),
+  "Flex request timeout is retryable",
+);
 assert(
   isGeminiCapacityStatus(
     503,
@@ -258,10 +269,22 @@ assert(
 );
 assert(!isRetryableGeminiError(new GeminiApiError(400, "bad request", PRIMARY_MODEL)), "400 is not retryable");
 
-assert(GEMINI_RETRY_DELAYS_MS.length > RETRY_DELAYS_MS.length, "Gemini uses a longer retry schedule than generic I/O");
+assert(GEMINI_RETRY_DELAYS_MS.length > RETRY_DELAYS_MS.length, "same-model Flex capacity uses a longer retry schedule than generic I/O");
 assert(
   GEMINI_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0) >= 5 * 60_000,
-  "Gemini capacity retries span at least ~5 minutes total",
+  "same-model Flex capacity retries span at least ~5 minutes total before model fallback",
+);
+assert(
+  GEMINI_RETRY_DELAYS_MS.every((d, i) => i === 0 || d > GEMINI_RETRY_DELAYS_MS[i - 1]!),
+  "Flex capacity delays are strictly increasing (exponential backoff)",
+);
+assert(
+  !isGeminiCapacityError(new Error("Gemini request timed out after 900000ms")),
+  "timeout is not classified as capacity (outer retry handles it)",
+);
+assert(
+  isRetryableGeminiError(capacityErr) && isGeminiCapacityError(capacityErr),
+  "capacity is retryable inside the same-model Flex loop",
 );
 const jittered = withJitter(1000, 0.2);
 assert(jittered >= 800 && jittered <= 1200, "withJitter stays within ±20%");

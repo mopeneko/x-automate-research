@@ -1,18 +1,37 @@
 import type { Tweet, WindowName } from "./types.ts";
-import { sleep } from "./retry.ts";
+import { GEMINI_RETRY_DELAYS_MS } from "./config.ts";
+import { sleep, withJitter } from "./retry.ts";
 
 /**
- * Summarizer: Gemini 3.8 Flash. Produces the four-section Summary Schema.
- * For Daily, uses the hybrid method (raw posts + intraday Window Summaries).
- * See ADR-0002.
+ * Summarizer: Gemini 3.8 Flash on the Flex inference tier. Produces the
+ * four-section Summary Schema. For Daily, uses the hybrid method (raw posts +
+ * intraday Window Summaries). See ADR-0002.
  *
- * Capacity resilience: on 503/429 UNAVAILABLE (common at JST midnight / US peak),
- * skip useless profile switches, let the outer retry wait longer, then fall back
- * to a stabler Flash model before failing the send.
+ * Flex: 50% cheaper than Standard, best-effort / sheddable capacity, target
+ * latency 1–15 min. Fits cron window sends (not interactive). No automatic
+ * upgrade to Standard when Flex is full — retry the same model with exponential
+ * backoff, then fall back across Flash models.
+ *
+ * Capacity resilience: Flex sheds often on the first attempt. On 503/429
+ * UNAVAILABLE, stay on the current model and retry with GEMINI_RETRY_DELAYS_MS
+ * (skip useless thinking-profile switches). Only after that schedule is
+ * exhausted do we fall back to a stabler Flash model.
  */
 
 /** Preferred model; Gemini 3.8 Flash (released Sep 2, 2026). See ADR-0002. */
 export const PRIMARY_MODEL = "gemini-3.8-flash";
+
+/**
+ * Inference tier for generateContent. Flex is half price vs Standard with
+ * variable latency; see https://ai.google.dev/gemini-api/docs/flex-inference
+ */
+export const SERVICE_TIER = "flex" as const;
+
+/**
+ * Client + X-Server-Timeout patience for Flex queueing.
+ * Docs recommend ≥600s; 15 min covers the published Flex latency target.
+ */
+export const GEMINI_REQUEST_TIMEOUT_MS = 900_000;
 
 /**
  * Fallback when the primary model is capacity-exhausted.
@@ -143,7 +162,9 @@ export function isRetryableGeminiError(err: unknown): boolean {
       if (/Gemini (400|401|403|404)\b/.test(msg)) return false;
     }
     if (/Gemini (429|5\d\d)\b/.test(msg)) return true;
-    if (/fetch failed|network|ECONNRESET|ETIMEDOUT|socket/i.test(msg)) return true;
+    if (/fetch failed|network|ECONNRESET|ETIMEDOUT|socket|timed out|aborted/i.test(msg)) {
+      return true;
+    }
     // Truncation / empty after profile fallback — retrying the same prompt rarely helps,
     // but a later attempt (or fallback model) might; allow retry.
     if (/truncated|empty visible/i.test(msg)) return true;
@@ -234,10 +255,11 @@ ${summarySection || "（時間帯別要約なし）"}
       } catch (err) {
         lastError = err;
         const hasFallback = m < GEMINI_MODELS.length - 1;
+        // generateWithModel already exhausted same-model capacity retries.
         if (hasFallback && isGeminiCapacityError(err)) {
           const reason = err instanceof Error ? err.message : String(err);
           console.warn(
-            `[gemini.${kind}] model ${model} capacity-unavailable, falling back to ${GEMINI_MODELS[m + 1]}: ${reason}`,
+            `[gemini.${kind}] model ${model} capacity-exhausted after retries, falling back to ${GEMINI_MODELS[m + 1]}: ${reason}`,
           );
           await sleep(2_000);
           continue;
@@ -249,7 +271,38 @@ ${summarySection || "（時間帯別要約なし）"}
     throw lastError;
   }
 
+  /**
+   * Run one model: capacity errors get same-model exponential backoff first;
+   * non-capacity failures may switch thinking profiles once.
+   */
   private async generateWithModel(
+    parts: GeminiPart[],
+    kind: "window" | "daily",
+    model: string,
+  ): Promise<string> {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= GEMINI_RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        return await this.generateWithProfiles(parts, kind, model);
+      } catch (err) {
+        lastError = err;
+        if (!isGeminiCapacityError(err) || attempt >= GEMINI_RETRY_DELAYS_MS.length) {
+          throw err;
+        }
+        const delay = withJitter(GEMINI_RETRY_DELAYS_MS[attempt]!, 0.2);
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[gemini.${kind}] ${model} capacity (attempt ${attempt + 1}/${GEMINI_RETRY_DELAYS_MS.length + 1}), retrying in ${delay}ms: ${reason}`,
+        );
+        await sleep(delay);
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async generateWithProfiles(
     parts: GeminiPart[],
     kind: "window" | "daily",
     model: string,
@@ -317,14 +370,38 @@ ${summarySection || "（時間帯別要約なし）"}
       contents: [{ role: "user", parts }],
       systemInstruction: { parts: [{ text: this.systemPrompt }] },
       generationConfig,
+      // REST generateContent accepts snake_case (see Flex inference docs).
+      service_tier: SERVICE_TIER,
     };
 
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-    const res = await fetch(`${endpoint}?key=${this.apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeoutSec = Math.ceil(GEMINI_REQUEST_TIMEOUT_MS / 1000);
+    const timer = setTimeout(() => controller.abort(), GEMINI_REQUEST_TIMEOUT_MS);
+
+    let res: Response;
+    try {
+      res = await fetch(`${endpoint}?key=${this.apiKey}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // Hint the server to keep Flex queue patience aligned with the client.
+          "X-Server-Timeout": String(timeoutSec),
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new Error(
+          `Gemini request timed out after ${GEMINI_REQUEST_TIMEOUT_MS}ms (${model}, ${SERVICE_TIER})`,
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+
     if (!res.ok) {
       const errText = await res.text();
       throw new GeminiApiError(res.status, errText, model);

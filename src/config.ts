@@ -18,9 +18,11 @@ export const WINDOWS: readonly WindowDef[] = [
 export const RETRY_DELAYS_MS = [2_000, 8_000, 30_000] as const;
 
 /**
- * Gemini capacity (503/429) needs a longer window than generic retries.
+ * Same-model Flex capacity backoff (503/429). Flex often sheds on the first try;
+ * stay on the current model and wait before falling back to another Flash generation.
  * 夜場/Daily fire at JST 00:00 (= UTC 15:00), which overlaps US daytime demand spikes.
- * Total wait ≈ 15s + 45s + 120s + 180s ≈ 6 minutes before giving up / model fallback.
+ * Each attempt may already wait up to GEMINI_REQUEST_TIMEOUT_MS in-queue.
+ * Inter-attempt wait ≈ 15s + 45s + 120s + 180s ≈ 6 minutes before model fallback.
  */
 export const GEMINI_RETRY_DELAYS_MS = [15_000, 45_000, 120_000, 180_000] as const;
 

@@ -1,10 +1,24 @@
 import type { Config } from "./config.ts";
 import type { Tweet, WindowName } from "./types.ts";
-import { GEMINI_RETRY_DELAYS_MS, WINDOWS } from "./config.ts";
+import { RETRY_DELAYS_MS, WINDOWS } from "./config.ts";
 import { Store } from "./store.ts";
-import { GeminiSummarizer, isRetryableGeminiError } from "./gemini.ts";
+import {
+  GeminiSummarizer,
+  isGeminiCapacityError,
+  isRetryableGeminiError,
+} from "./gemini.ts";
 import { inWindow } from "./time.ts";
 import { withRetry } from "./retry.ts";
+
+/**
+ * Outer retry covers truncation / network / timeouts only.
+ * Flex capacity (503/429) is retried with exponential backoff inside the
+ * Summarizer on the same model before any model fallback — do not double-retry
+ * it here or we burn through fallback models on every outer attempt.
+ */
+function shouldRetryOuterGemini(err: unknown): boolean {
+  return isRetryableGeminiError(err) && !isGeminiCapacityError(err);
+}
 
 /**
  * Summarization: slices a window's posts from the Tweet Store and generates
@@ -40,7 +54,7 @@ export async function summarizeWindow(
   const text = await withRetry(
     `gemini.${windowName}`,
     () => summarizer.summarizeWindow(windowName, posts),
-    { delays: GEMINI_RETRY_DELAYS_MS, shouldRetry: isRetryableGeminiError },
+    { delays: RETRY_DELAYS_MS, shouldRetry: shouldRetryOuterGemini },
   );
 
   await store.saveWindowSummary(date, windowName, text);
@@ -64,7 +78,7 @@ export async function summarizeDaily(
   const text = await withRetry(
     "gemini.Daily",
     () => summarizer.summarizeDaily(posts, intraday),
-    { delays: GEMINI_RETRY_DELAYS_MS, shouldRetry: isRetryableGeminiError },
+    { delays: RETRY_DELAYS_MS, shouldRetry: shouldRetryOuterGemini },
   );
 
   await store.saveWindowSummary(date, "Daily", text);

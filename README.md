@@ -106,6 +106,48 @@ bun run test
 bun run typecheck
 ```
 
+## Jevによる補助分類（任意）
+
+Geminiへ渡す前に、TypeSafe Jevで投稿本文を「投稿の種類」「材料の種類」「根拠の示し方」の3軸に分類できます。要約文の生成と画像読解は引き続きGeminiが担当します。投稿の削除・並べ替え・意味的な重複排除は行いません。分類は参考情報で、原文・画像を優先します。要約精度の向上は未実証です。
+
+[TypeSafe Console](https://console.typesafe.ai/)でAPIキーを取得し、既存の環境変数に追加してください（キーをGitへコミットしないでください）。
+
+```dotenv
+JEV_ENABLED=true
+TYPESAFE_API_KEY=取得したキー
+JEV_MODEL=jev-1.13.0
+```
+
+- 既定は無効。`JEV_ENABLED=true`かつキーありの場合のみ有効です。キー未設定・API障害・不正応答でも元の投稿をGeminiへ渡します。
+- 全Pipelineの時間帯別/Daily要約に適用します。Pipeline固有の出力構造を維持したまま、補助分類の扱いだけを追加します。
+- 分類は本文だけが対象です。画像はJevへ送りません。空本文・6,000文字超の本文は分類をスキップし、元の要約入力には残します。
+- 確信度0.7未満はGeminiに「判断保留」として渡します。この閾値は初期設定であり、日本語の実データでの品質検証は別途必要です。
+- 正式発表/報道への言及ラベルは、情報が真正・確認済みであることを意味しません。
+- 1リクエスト最大8投稿、本文合計約18KB、最大3並列。補助分類のAPI待機は全体60秒で打ち切り、取得できた分類だけを利用します。APIエラー後は新規バッチを停止し、再試行はしません。
+- `store/<pipelineId>/jev/<date>/<hash>.json`に投稿ID・分類・確率分布・モデル・分類日時を保存します。モデル/本文/画像URL等/分類定義バージョンが同じならDailyや再実行で再利用します。原文JSONは変更しません。
+- モデルの再現性のためバージョンを固定しています。モデル変更時はキャッシュを再利用しません。同じ設定で再分類したい場合は該当日の`jev/<date>/`を削除してください。これらの保存ファイルは自動削除されないため、原文と併せて保管・整理してください。
+- JevとGeminiへの補助情報追加分のAPI費用が発生します。下記の従来のコスト見積もりには含まれません。
+
+### 配信せずに比較する
+
+VPS等に保存済みの投稿を使い、以下を実行します。日付とPipeline IDは実データに合わせてください。
+
+```bash
+bun run preview main 2026-09-19 朝場
+```
+
+Telegramには送信せず、保存済みの時間帯別/Daily要約も上書きしません。出力先は`store/<pipelineId>/previews/<date>-<window>-<run>/`です。
+
+- `baseline.txt`: 従来のGemini要約
+- `jev.txt`: Jev補助分類付きのGemini要約
+- `input.json`: 比較時の原文・補助分類・Daily用の時間帯別要約
+
+同じ投稿とPipeline System Promptで2回Geminiを呼ぶため、比較用のAPI費用が発生します。Dailyでは両版に同じ保存済み時間帯別要約を渡します（その要約がJev有効時に作られていれば、純粋な従来版との比較にはなりません。初回比較は時間帯別を推奨）。画像は各生成時に取得するため、その間に取得可否が変わる場合があります。
+
+「重要情報の抜け」「原文と異なる記述」「噂の断定」「重複」を見比べてください。単発の出力差にはGeminiの生成ばらつきも含まれます。APIキー取得後の実API疎通と品質評価は別途行ってください。
+
+無効化するには`JEV_ENABLED=false`へ戻してください。
+
 ## 想定コスト (1日500ポスト)
 - SocialData 取得: ~$3/月（新規ポスト500件/日のみ課金 / `since_id` サーバフィルタでページ再課金なし）
 - Gemini 要約: ~$1.9/月（Flex・Standard比 約半額）
@@ -119,6 +161,8 @@ src/
   time.ts        JST時刻処理・ウィンドウ判定
   store.ts       Tweet Store (Pipeline別の日次JSON + cursor.json / アトミック書込)
   socialdata.ts  SocialData API クライアント
+  jev.ts         任意のJev補助分類・キャッシュ・フォールバック
+  preview.ts     従来版/Jev版の比較（Telegram送信なし）
   gemini.ts      Summarizer (Gemini 3.8 Flash / Flex / 4セクション要約)
   telegram.ts    Telegram送信クライアント (4096字自動分割)
   retry.ts       指数バックオフリトライ

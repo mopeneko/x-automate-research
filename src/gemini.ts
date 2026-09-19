@@ -1,6 +1,8 @@
 import type { Tweet, WindowName } from "./types.ts";
 import { GEMINI_RETRY_DELAYS_MS } from "./config.ts";
 import { sleep, withJitter } from "./retry.ts";
+import { formatJevAnnotation, JEV_GUIDANCE } from "./jev.ts";
+import type { JevAnnotation, JevAnnotations } from "./jev.ts";
 
 /**
  * Summarizer: Gemini 3.8 Flash on the Flex inference tier. Produces the
@@ -210,14 +212,15 @@ export class GeminiSummarizer {
   private apiKey: string;
   private systemPrompt: string;
 
-  constructor(apiKey: string, pipelineSystemPrompt?: string) {
+  constructor(apiKey: string, pipelineSystemPrompt?: string, private annotations: JevAnnotations = {}) {
     this.apiKey = apiKey;
-    this.systemPrompt = resolveSystemPrompt(pipelineSystemPrompt);
+    this.systemPrompt = resolveSystemPrompt(pipelineSystemPrompt)
+      + (Object.keys(annotations).length > 0 ? "\n\n" + JEV_GUIDANCE : "");
   }
 
   /** Summarize one intraday window from its raw posts. */
   async summarizeWindow(window: WindowName, posts: Tweet[]): Promise<string> {
-    const parts = await buildWindowPromptParts(window, posts);
+    const parts = await buildWindowPromptParts(window, posts, this.annotations);
     return await this.generate(parts, "window");
   }
 
@@ -225,7 +228,7 @@ export class GeminiSummarizer {
   async summarizeDaily(posts: Tweet[], intradaySummaries: Record<string, string>): Promise<string> {
     const rawSection = posts.length === 0
       ? "（当日のツイートはありません）"
-      : posts.map(formatTweet).join("\n\n");
+      : posts.map((post) => formatTweet(post, this.annotations[post.id])).join("\n\n");
 
     const summarySection = (["朝場", "昼場", "夜場"] as const)
       .filter((w) => intradaySummaries[w])
@@ -426,11 +429,11 @@ export function extractResponseText(parts: GeminiPart[]): string {
     .join("");
 }
 
-export function formatTweet(t: Tweet): string {
+export function formatTweet(t: Tweet, annotation?: JevAnnotation): string {
   const time = t.createdAt.replace("T", " ").replace(/\.\d+Z$/, "Z");
   const prefix = t.isRetweet ? "[RT] " : t.isQuote ? "[QT] " : "";
   const imageNote = t.imageUrls && t.imageUrls.length > 0 ? ` [画像${t.imageUrls.length}枚添付]` : "";
-  return `${time} @${t.author}: ${prefix}${t.text}${imageNote}`;
+  return `${time} @${t.author}: ${prefix}${t.text}${imageNote}${formatJevAnnotation(annotation)}`;
 }
 export async function fetchImageAsPart(url: string, timeoutMs = 5000): Promise<GeminiPart | null> {
   try {
@@ -473,6 +476,7 @@ export async function fetchImageAsPart(url: string, timeoutMs = 5000): Promise<G
 export async function buildWindowPromptParts(
   window: WindowName,
   posts: Tweet[],
+  annotations: JevAnnotations = {},
 ): Promise<GeminiPart[]> {
   if (posts.length === 0) {
     return [
@@ -495,7 +499,7 @@ export async function buildWindowPromptParts(
 
   for (let i = 0; i < posts.length; i++) {
     const post = posts[i]!;
-    const postHeader = `${i > 0 ? "\n\n" : ""}${formatTweet(post)}`;
+    const postHeader = `${i > 0 ? "\n\n" : ""}${formatTweet(post, annotations[post.id])}`;
 
     const imageParts: GeminiPart[] = [];
     if (post.imageUrls && post.imageUrls.length > 0) {

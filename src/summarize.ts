@@ -1,3 +1,5 @@
+import { join } from "node:path";
+import { annotatePosts } from "./jev.ts";
 import type { Config } from "./config.ts";
 import type { Tweet, WindowName } from "./types.ts";
 import { RETRY_DELAYS_MS, WINDOWS } from "./config.ts";
@@ -50,7 +52,8 @@ export async function summarizeWindow(
   const day = await store.readDay(date);
   const posts = sliceWindow(day.posts, windowName);
 
-  const summarizer = new GeminiSummarizer(config.geminiApiKey, systemPrompt);
+  const annotations = await annotatePosts(posts, config.jev, join(config.storeDir, pipelineId, "jev", date));
+  const summarizer = new GeminiSummarizer(config.geminiApiKey, systemPrompt, annotations);
   const text = await withRetry(
     `gemini.${windowName}`,
     () => summarizer.summarizeWindow(windowName, posts),
@@ -74,7 +77,8 @@ export async function summarizeDaily(
   const posts = summarizeablePosts(day.posts);
   const intraday = await store.readWindowSummaries(date);
 
-  const summarizer = new GeminiSummarizer(config.geminiApiKey, systemPrompt);
+  const annotations = await annotatePosts(posts, config.jev, join(config.storeDir, pipelineId, "jev", date));
+  const summarizer = new GeminiSummarizer(config.geminiApiKey, systemPrompt, annotations);
   const text = await withRetry(
     "gemini.Daily",
     () => summarizer.summarizeDaily(posts, intraday),

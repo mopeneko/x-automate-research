@@ -73,3 +73,9 @@ _Avoid_: Alert, Alarm
 - Failure handling: 3-retry exponential backoff for generic I/O; Gemini Flex capacity errors (503/429 UNAVAILABLE — common on the first Flex attempt, and at JST midnight / US daytime) retry the **same model** with a longer backoff (~6 min total between attempts), skip useless thinking-profile switches, then fall back across Flash models (`gemini-3.8-flash` → `gemini-3.5-flash` → `gemini-3.1-flash` → `gemini-2.5-flash`), and pace sequential Gemini calls between windows/Pipelines. Each Flex call may wait up to 15 minutes in-queue. User-facing Error Notification only on complete window-send failure or 3 consecutive poll failures per Pipeline; `cursor.json` written atomically; consecutive-poll-failure counter persisted in `cursor.json` (per Pipeline).
 - Post filter: replies to other accounts are excluded from summarization; retweets and quote-tweets are included.
 - Cron entries: `*/15 * * * *` (poll), `30 12 * * *` (朝場 send), `30 16 * * *` (昼場 send), `0 0 * * *` (夜場 + Daily send). All times JST; the VPS timezone must be set to Asia/Tokyo.
+
+## Optional Jev enrichment
+
+With `JEV_ENABLED=true` and `TYPESAFE_API_KEY`, Jev classifies each post's text by kind, event category, and stated evidence before Gemini summarization. It never filters or reorders posts. Labels are advisory, not fact verification; Gemini retains the raw text and its existing image path. Pipeline System Prompts still own the output schema, with shared enrichment guidance appended only when annotations exist.
+
+Annotations are cached separately by Pipeline/date/input/model/schema version and reused by Daily. Failures/timeouts fall back to original inputs; no additional Telegram Error Notification is sent. See [ADR-0006](docs/adr/0006-jev-summary-enrichment.md). `preview` generates baseline/enriched files without sending Telegram or changing saved summaries.

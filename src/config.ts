@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { JevConfig } from "./jev.ts";
 import type { PipelineConfig, WindowDef } from "./types.ts";
 
 /**
@@ -41,6 +42,7 @@ export interface Config {
   telegramBotToken: string;
   pipelines: PipelineConfig[];
   storeDir: string;
+  jev?: JevConfig;
 }
 
 const PIPELINE_ID_RE = /^[a-z0-9-]+$/;
@@ -59,6 +61,7 @@ export function loadConfig(): Config {
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN!,
     pipelines: loadPipelines(),
     storeDir: process.env.STORE_DIR ?? "./store",
+    jev: loadJevConfig(process.env),
   };
 }
 
@@ -130,4 +133,15 @@ function isPipelineConfig(value: unknown): value is PipelineConfig {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+/** Explicit opt-in; a missing key falls back to the existing summarizer. */
+export function loadJevConfig(env: Record<string, string | undefined>): JevConfig | undefined {
+  if (env.JEV_ENABLED !== "true") return undefined;
+  const apiKey = env.TYPESAFE_API_KEY?.trim();
+  if (!apiKey) {
+    console.warn("[jev] JEV_ENABLED=true but TYPESAFE_API_KEY is missing; using original summaries");
+    return undefined;
+  }
+  return { apiKey, model: env.JEV_MODEL?.trim() || "jev-1.13.0" };
 }

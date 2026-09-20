@@ -73,3 +73,11 @@ _Avoid_: Alert, Alarm
 - Failure handling: 3-retry exponential backoff for generic I/O; Gemini Flex capacity errors (503/429 UNAVAILABLE — common on the first Flex attempt, and at JST midnight / US daytime) retry the **same model** with a longer backoff (~6 min total between attempts), skip useless thinking-profile switches, then fall back across Flash models (`gemini-3.8-flash` → `gemini-3.5-flash` → `gemini-3.1-flash` → `gemini-2.5-flash`), and pace sequential Gemini calls between windows/Pipelines. Each Flex call may wait up to 15 minutes in-queue. User-facing Error Notification only on complete window-send failure or 3 consecutive poll failures per Pipeline; `cursor.json` written atomically; consecutive-poll-failure counter persisted in `cursor.json` (per Pipeline).
 - Post filter: replies to other accounts are excluded from summarization; retweets and quote-tweets are included.
 - Cron entries: `*/15 * * * *` (poll), `30 12 * * *` (朝場 send), `30 16 * * *` (昼場 send), `0 0 * * *` (夜場 + Daily send). All times JST; the VPS timezone must be set to Asia/Tokyo.
+
+## Optional Jev review
+
+With `JEV_ENABLED=true` and `TYPESAFE_API_KEY`, `JEV_MODE=review` (default) audits the generated summary against candidate raw posts for certainty inflation and changes in meaning. It proposes edits only to flagged/uncertain lines, rechecks candidates against the same sources, and adopts only cleared edits. Image contents, numeric correctness, external truth and completeness are not verified. API failures retain the draft and are recorded as unavailable; unresolved lines remain in the output.
+
+Reports are stored separately by Pipeline/date/window. `preview` compares one draft against its reviewed result and includes a readable audit report, without sending Telegram or changing saved summaries. See [ADR-0007](docs/adr/0007-source-review-after-summary.md).
+
+The previous annotation path remains available only through explicit `JEV_MODE=annotate`; see [ADR-0006](docs/adr/0006-jev-summary-enrichment.md). Existing annotation caches remain intact.

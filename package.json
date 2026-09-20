@@ -4,11 +4,12 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "preview": "bun run src/preview.ts",
     "poll": "bun run src/index.ts poll",
     "send:asa": "bun run src/index.ts send 朝場",
     "send:hiru": "bun run src/index.ts send 昼場",
     "send:yoru": "bun run src/index.ts send 夜場",
-    "test": "bun run test/smoke.ts",
+    "test": "bun run test/smoke.ts && bun test test/jev.test.ts test/review.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

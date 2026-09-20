@@ -143,5 +143,5 @@ export function loadJevConfig(env: Record<string, string | undefined>): JevConfi
     console.warn("[jev] JEV_ENABLED=true but TYPESAFE_API_KEY is missing; using original summaries");
     return undefined;
   }
-  return { apiKey, model: env.JEV_MODEL?.trim() || "jev-1.13.0" };
+  return { apiKey, model: env.JEV_MODEL?.trim() || "jev-1.13.0", mode: env.JEV_MODE === "annotate" ? "annotate" : "review" };
 }

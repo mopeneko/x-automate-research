@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { loadConfig, GEMINI_CALL_GAP_MS, WINDOWS } from "./config.ts";
 import type { Config } from "./config.ts";
 import { GeminiSummarizer } from "./gemini.ts";
+import { reviewSummary, formatReviewReport } from "./review.ts";
 import { annotatePosts } from "./jev.ts";
 import { Store } from "./store.ts";
 import { sliceWindow, summarizeablePosts } from "./summarize.ts";
@@ -19,8 +20,8 @@ export async function previewComparison(config: Config, pipelineId: string, date
   const day = await store.readDay(date);
   const posts = window === "Daily" ? summarizeablePosts(day.posts) : sliceWindow(day.posts, window);
   if (!posts.length) throw new Error("No stored posts for this date/window");
-  const annotations = await annotatePosts(posts, config.jev, join(config.storeDir, pipelineId, "jev", date));
-  if (!Object.keys(annotations).length) throw new Error("No Jev annotations available; comparison cancelled before Gemini calls");
+  const annotations = await annotatePosts(posts, config.jev.mode === "annotate" ? config.jev : undefined, join(config.storeDir, pipelineId, "jev", date));
+  if (config.jev.mode === "annotate" && !Object.keys(annotations).length) throw new Error("No Jev annotations available; comparison cancelled before Gemini calls");
   // The same intraday snapshot is used for both variants, even for Daily.
   const intraday = window === "Daily" ? await store.readWindowSummaries(date) : {};
   const baseline = new GeminiSummarizer(config.geminiApiKey, pipeline.systemPrompt);
@@ -31,9 +32,18 @@ export async function previewComparison(config: Config, pipelineId: string, date
   const generate = (summarizer: GeminiSummarizer) => window === "Daily"
     ? summarizer.summarizeDaily(posts, intraday)
     : summarizer.summarizeWindow(window, posts);
-  await writeFile(join(outputDir, "baseline.txt"), await generate(baseline));
-  await Bun.sleep(GEMINI_CALL_GAP_MS);
-  await writeFile(join(outputDir, "jev.txt"), await generate(enriched));
+  const draft = await generate(baseline);
+  await writeFile(join(outputDir, "baseline.txt"), draft);
+  if (config.jev.mode === "annotate") {
+    await Bun.sleep(GEMINI_CALL_GAP_MS);
+    await writeFile(join(outputDir, "jev.txt"), await generate(enriched));
+  } else {
+    const report = await reviewSummary(draft, posts, config.jev, (items) => baseline.repairClaims(items));
+    await writeFile(join(outputDir, "audit.json"), JSON.stringify(report, null, 2));
+    await writeFile(join(outputDir, "audit.md"), formatReviewReport(report));
+    await writeFile(join(outputDir, "jev.txt"), report.final);
+    console.log(`[jev.review] edits=${report.appliedLines.length} unresolved=${report.unresolvedLines.length} unchecked=${report.before.uncheckedLines}`);
+  }
   return outputDir;
 }
 

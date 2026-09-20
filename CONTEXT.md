@@ -74,8 +74,10 @@ _Avoid_: Alert, Alarm
 - Post filter: replies to other accounts are excluded from summarization; retweets and quote-tweets are included.
 - Cron entries: `*/15 * * * *` (poll), `30 12 * * *` (朝場 send), `30 16 * * *` (昼場 send), `0 0 * * *` (夜場 + Daily send). All times JST; the VPS timezone must be set to Asia/Tokyo.
 
-## Optional Jev enrichment
+## Optional Jev review
 
-With `JEV_ENABLED=true` and `TYPESAFE_API_KEY`, Jev classifies each post's text by kind, event category, and stated evidence before Gemini summarization. It never filters or reorders posts. Labels are advisory, not fact verification; Gemini retains the raw text and its existing image path. Pipeline System Prompts still own the output schema, with shared enrichment guidance appended only when annotations exist.
+With `JEV_ENABLED=true` and `TYPESAFE_API_KEY`, `JEV_MODE=review` (default) audits the generated summary against candidate raw posts for certainty inflation and changes in meaning. It proposes edits only to flagged/uncertain lines, rechecks candidates against the same sources, and adopts only cleared edits. Image contents, numeric correctness, external truth and completeness are not verified. API failures retain the draft and are recorded as unavailable; unresolved lines remain in the output.
 
-Annotations are cached separately by Pipeline/date/input/model/schema version and reused by Daily. Failures/timeouts fall back to original inputs; no additional Telegram Error Notification is sent. See [ADR-0006](docs/adr/0006-jev-summary-enrichment.md). `preview` generates baseline/enriched files without sending Telegram or changing saved summaries.
+Reports are stored separately by Pipeline/date/window. `preview` compares one draft against its reviewed result and includes a readable audit report, without sending Telegram or changing saved summaries. See [ADR-0007](docs/adr/0007-source-review-after-summary.md).
+
+The previous annotation path remains available only through explicit `JEV_MODE=annotate`; see [ADR-0006](docs/adr/0006-jev-summary-enrichment.md). Existing annotation caches remain intact.

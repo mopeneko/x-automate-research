@@ -1,3 +1,4 @@
+import { reviewSummary, saveReview } from "./review.ts";
 import { join } from "node:path";
 import { annotatePosts } from "./jev.ts";
 import type { Config } from "./config.ts";
@@ -52,14 +53,15 @@ export async function summarizeWindow(
   const day = await store.readDay(date);
   const posts = sliceWindow(day.posts, windowName);
 
-  const annotations = await annotatePosts(posts, config.jev, join(config.storeDir, pipelineId, "jev", date));
+  const annotations = await annotatePosts(posts, config.jev?.mode === "annotate" ? config.jev : undefined, join(config.storeDir, pipelineId, "jev", date));
   const summarizer = new GeminiSummarizer(config.geminiApiKey, systemPrompt, annotations);
-  const text = await withRetry(
+  const draft = await withRetry(
     `gemini.${windowName}`,
     () => summarizer.summarizeWindow(windowName, posts),
     { delays: RETRY_DELAYS_MS, shouldRetry: shouldRetryOuterGemini },
   );
 
+  const text = await finishReview(draft, posts, config, summarizer, join(config.storeDir, pipelineId, "reviews", date, windowName));
   await store.saveWindowSummary(date, windowName, text);
   console.log(`[summarize] ${windowName} ${date}: ${posts.length} posts → ${text.length} chars`);
   return text;
@@ -77,15 +79,29 @@ export async function summarizeDaily(
   const posts = summarizeablePosts(day.posts);
   const intraday = await store.readWindowSummaries(date);
 
-  const annotations = await annotatePosts(posts, config.jev, join(config.storeDir, pipelineId, "jev", date));
+  const annotations = await annotatePosts(posts, config.jev?.mode === "annotate" ? config.jev : undefined, join(config.storeDir, pipelineId, "jev", date));
   const summarizer = new GeminiSummarizer(config.geminiApiKey, systemPrompt, annotations);
-  const text = await withRetry(
+  const draft = await withRetry(
     "gemini.Daily",
     () => summarizer.summarizeDaily(posts, intraday),
     { delays: RETRY_DELAYS_MS, shouldRetry: shouldRetryOuterGemini },
   );
 
+  const text = await finishReview(draft, posts, config, summarizer, join(config.storeDir, pipelineId, "reviews", date, "Daily"));
   await store.saveWindowSummary(date, "Daily", text);
   console.log(`[summarize] Daily ${date}: ${posts.length} posts → ${text.length} chars`);
   return text;
+}
+
+async function finishReview(draft: string, posts: Tweet[], config: Config, summarizer: GeminiSummarizer, dir: string): Promise<string> {
+  if (!config.jev || config.jev.mode === "annotate") return draft;
+  try {
+    const report = await reviewSummary(draft, posts, config.jev, (items) => summarizer.repairClaims(items));
+    await saveReview(report, dir);
+    console.log(`[jev.review] status=${report.before.status} edits=${report.appliedLines.length} unresolved=${report.unresolvedLines.length} unchecked=${report.before.uncheckedLines}`);
+    return report.final;
+  } catch {
+    console.warn("[jev.review] unavailable; preserving draft (not verified)");
+    return draft;
+  }
 }

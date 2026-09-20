@@ -6,6 +6,7 @@ import type { Tweet } from "./types.ts";
 export interface JevConfig {
   apiKey: string;
   model: string;
+  mode?: "review" | "annotate";
 }
 
 // Bump when criteria or interpretation changes; cache keys include this version.

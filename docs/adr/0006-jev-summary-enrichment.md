@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for implementation; live API validation and summary-quality evaluation pending.
+Superseded as default by ADR-0007. Retained as explicit `JEV_MODE=annotate` for comparison.
 
 ## Context
 

@@ -26,7 +26,7 @@ const post: Tweet = {
   text: "A社が業績予想を上方修正。売上100億円の見込み。",
   isReply: false, isQuote: false, isRetweet: false,
 };
-const config = { apiKey: "test-only", model: "jev-1.13.0" };
+const config = { apiKey: "test-only", model: "jev-1.13.0", mode: "annotate" as const };
 
 function reply(init?: RequestInit, confidence = 0.9) {
   const request = JSON.parse(init!.body as string);
@@ -43,7 +43,7 @@ describe("optional Jev enrichment", () => {
   test("explicit opt-in and key are both required; disabled does no I/O", async () => {
     expect(loadJevConfig({ TYPESAFE_API_KEY: "secret" })).toBeUndefined();
     expect(loadJevConfig({ JEV_ENABLED: "true" })).toBeUndefined();
-    expect(loadJevConfig({ JEV_ENABLED: "true", TYPESAFE_API_KEY: " key " })).toEqual({ apiKey: "key", model: "jev-1.13.0" });
+    expect(loadJevConfig({ JEV_ENABLED: "true", TYPESAFE_API_KEY: " key " })).toEqual({ apiKey: "key", model: "jev-1.13.0", mode: "review" });
     const dir = join(await directory(), "absent");
     const result = await annotatePosts([post], undefined, dir, { fetcher: (() => { throw new Error("must not call"); }) as unknown as typeof fetch });
     expect(result).toEqual({});
